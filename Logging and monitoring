@@ -1,0 +1,340 @@
+Here's everything from the guide, presented directly:
+
+---
+
+# SALESFORCE LOGGING & MONITORING — Implementation Guide for Junior Developers
+
+---
+
+## 1. Overview & What You Need to Know
+
+This guide walks you through implementing a logging and monitoring solution for Salesforce. Think of it as setting up a security camera system for your Salesforce environment — you want to know who is coming in, what they are doing, and get alerted if anything looks suspicious.
+
+> **📌 The Simple Version:** Your job is to connect Salesforce to Microsoft Defender for Cloud Apps (DfCA). Once connected, Defender will automatically pull Salesforce activity logs, analyse them, and alert you when something looks wrong.
+
+### What is the MVP Approach?
+
+MVP = Minimum Viable Product. Your senior has kept this simple. The plan is:
+
+1. Set up the Salesforce + Microsoft Defender for Cloud Apps integration
+2. Start monitoring the logs available now (out of the box)
+3. Review what gaps exist and decide if Salesforce Shield is needed for deeper logging
+
+> **💡 What is Salesforce Shield?** Shield is a premium Salesforce add-on that unlocks detailed audit trails, field-level encryption, and event monitoring (like tracking every click a user makes). It costs extra, so you evaluate if it's needed after the MVP.
+
+### Two Key Tools You Will Work With
+
+| Tool | What it Does |
+|---|---|
+| **Salesforce** | Your CRM platform — it generates logs of all user activity, logins, API calls, data exports, etc. |
+| **Microsoft Defender for Cloud Apps (DfCA)** | A security tool that connects to Salesforce, collects its logs, and monitors for suspicious behaviour. Think of it as the "brain" that analyses the camera footage. |
+
+---
+
+## 2. What Logs & Events Do We Need to Monitor?
+
+There are four main categories of suspicious activity to watch for.
+
+---
+
+### Category 1: Anomalous Access Events
+
+> **🔑 In Plain English:** Someone accessing Salesforce in a way that looks wrong — from a strange location, using a weird device, or doing something they shouldn't be able to do.
+
+#### Login Events (Failed and Successful)
+Every login attempt creates a log entry. We capture:
+- **Source IP address** — the network address the login came from
+- **Geolocation** — which country/city that IP maps to
+- **Login type** — was it a human user via browser, or an API/system login?
+- **Timestamp** — exactly when it happened
+
+> **⚠️ Why This Matters:** If your UK-based user logs in from London at 9am, then again from Russia at 9:05am — that is physically impossible. This is called a **"fast travel event"** and is a strong indicator of account compromise.
+
+#### Session Hijacking
+A session token is like a temporary key given to a user once they log in. If someone steals that token, they can access the account without needing the password.
+- We monitor for session tokens being used from different IPs within a short time
+- Unusual user-agent strings (the browser/app signature) indicate automated tools or bots
+
+#### Suspicious IP & User Agents
+- IPs on known threat intelligence blocklists (e.g. Tor exit nodes, known attacker IP ranges)
+- Unusual browser/client signatures — for example, a Python script hitting the Salesforce API instead of a real browser
+
+#### Use of Breakglass / Local Salesforce Accounts
+Breakglass accounts are emergency admin accounts that bypass normal Single Sign-On (SSO). They should almost never be used. Any login with one of these accounts must trigger an immediate alert.
+
+#### Multiple Successive Failed Logins
+If someone fails to log in 5+ times in a row, this could be a brute-force password attack. We alert on this pattern.
+
+---
+
+### Category 2: Data Theft / Loss Events
+
+> **🔑 In Plain English:** Someone taking data out of Salesforce in bulk — either intentionally (data theft) or accidentally. A legitimate user does not usually export 50,000 records at once.
+
+#### Access Events (Authorised and Unauthorised)
+- Every record viewed, searched, or accessed creates a log entry
+- If a user accesses records they don't normally access (e.g. HR data when they work in Sales), that is suspicious
+- A high number of unauthorised access events for a single user = alert
+
+#### Data & File Exports / Downloads
+- Reports exported to CSV or Excel
+- Attachments and files downloaded in bulk
+- Any export of more than a threshold number of records (e.g. >1,000 in a single session)
+
+#### Bulk API Data Requests
+Salesforce has a Bulk API used by developers to move large amounts of data. If a user or integration suddenly starts making huge API queries, we flag it.
+
+#### Bulk Deletion Operations
+Deleting hundreds or thousands of records at once is a red flag — whether accidental or malicious, it needs to be caught immediately.
+
+---
+
+### Category 3: Privilege Escalation Events
+
+> **🔑 In Plain English:** Someone gaining more access or power than they should have. Like a regular employee suddenly getting admin rights — did they grant that to themselves?
+
+#### New Account Creation
+- Any new user created in Salesforce is logged
+- Creating accounts outside of normal HR/IT processes is suspicious
+
+#### Permission Modifications
+- Changes to user Profiles or Permission Sets (these control what a user can see/do)
+- Any user being granted System Administrator permissions
+
+#### Account Enable / Disable Events
+- Reactivating a disabled user account — especially former employees
+- Disabling active accounts (could be someone covering their tracks)
+
+---
+
+### Category 4: Security Policy Changes
+
+> **🚨 Critical:** Someone turning off the security systems. If a bad actor gets admin access, one of the first things they might do is disable logging or MFA so they can't be detected. Any event in this category should trigger an **immediate high-priority alert.**
+
+- **Disabling MFA** on any account
+- **Disabling or modifying audit logging** settings
+- **Disabling data masking** (e.g. hiding last 4 digits of credit card numbers)
+- **Changes to access control settings** — Sharing Rules, Organisation-Wide Defaults (OWD), IP restrictions
+
+---
+
+## 3. Salesforce Log Types — What Is Available
+
+### Out-of-the-Box Logs (No Extra Licence Needed)
+
+| Log Type | What It Captures | Which Events It Covers |
+|---|---|---|
+| **Login History** | All login attempts, source IP, timestamp, login type (UI vs API) | Login events, failed logins, breakglass use |
+| **Setup Audit Trail** | 6 months of admin changes — user creation, permission changes, security settings | Privilege escalation, security policy changes |
+| **API Usage Logs** | API calls made by integrations and users | Bulk API requests, suspicious API behaviour |
+| **Event Log Files (ELF)** | Daily CSV files covering ~50 event types — logins, reports, API calls, SOQL queries | Broad coverage — the main log source |
+
+> **💡 Note on Event Log Files:** ELF is one of the most powerful standard log sources in Salesforce. It produces CSV files daily. DfCA pulls these automatically once connected. ELF data is retained for 24 hours by default (or 30 days with an add-on), so DfCA pulling them regularly is important.
+
+### Salesforce Shield Logs (Require Additional Licence)
+
+| Shield Feature | What It Adds | Which Gaps It Fills |
+|---|---|---|
+| **Event Monitoring** | Real-time, granular event streaming — every click, view, export as it happens | Session hijacking, field-level data access, user behaviour analytics |
+| **Field Audit Trail** | Track changes to specific field values over time (up to 10 years) | Data modification history, compliance audit trail |
+| **Transaction Security** | Real-time policy enforcement — block or alert during an active session | Bulk download blocking, session termination on detected anomaly |
+
+---
+
+## 4. The MVP: Connecting Salesforce to Defender for Cloud Apps
+
+> **📋 Before You Start — Prerequisites:**
+> - A Microsoft 365 / Azure subscription with a Defender for Cloud Apps licence
+> - Salesforce System Administrator access
+> - Global Admin or Security Admin rights in Microsoft 365
+
+### Step-by-Step: Setting Up the Integration
+
+**Step 1: Open Defender for Cloud Apps Portal**
+- Go to: `https://security.microsoft.com`
+- Navigate to: **Cloud Apps > Connected Apps > App Connectors**
+- This is the hub where you connect third-party apps like Salesforce
+
+**Step 2: Add Salesforce as a Connected App**
+- Click **"+ Connect an App"** and search for Salesforce
+- Click on Salesforce, then **"Connect Salesforce"**
+- You will be prompted to authenticate with your Salesforce admin credentials
+
+> **⚠️ Important:** The Salesforce account you use to connect must be a System Administrator. DfCA needs this level of access to read audit logs and event data. Use a **dedicated service account** for this — not a personal admin account. This is best practice so the connection does not break if someone's account is modified.
+
+**Step 3: Grant OAuth Permissions**
+- Salesforce will show a permissions consent screen
+- DfCA needs: Read all data, Run reports, Manage users (read), Access Audit Trail
+- Click **Allow**
+- DfCA will now appear as a Connected App inside Salesforce (Setup > Apps > Connected Apps)
+
+> **💡 What is OAuth?** It is a secure way for two systems to authorise each other without sharing passwords. Salesforce "trusts" DfCA to read its logs because you explicitly approved it through this consent screen.
+
+**Step 4: Verify the Connection**
+- Back in the Defender portal, the Salesforce connector should show status **"Connected"**
+- It may take up to 1 hour for the first batch of logs to appear
+- Navigate to **Cloud Apps > Activity Log** and verify Salesforce events are flowing in
+
+**Step 5: Review What Data Is Being Collected**
+Once connected, DfCA automatically pulls:
+- Login events (success and failure)
+- Setup Audit Trail entries (admin changes)
+- Event Log Files (the ~50 event categories)
+- API activity
+
+### Understanding the Defender for Cloud Apps Interface
+
+| Section | What You Use It For |
+|---|---|
+| **Activity Log** | See every Salesforce event DfCA has collected. Filter by user, IP, action type, date. |
+| **Alerts** | Triggered notifications when a policy is violated. This is your security inbox. |
+| **Policies** | Rules that define what counts as suspicious. DfCA has built-in policies and you can create custom ones. |
+| **Investigation > Users** | Profile view per user — see their activity timeline, risk score, and alerts. |
+
+---
+
+## 5. Configuring Alerts & Policies in Defender
+
+### Built-in Policies to Enable Immediately
+
+| Policy Name | What It Detects | Severity |
+|---|---|---|
+| Impossible Travel | Login from two geographically distant locations within a short time | 🔴 High |
+| Activity from Infrequent Country | Login from a country the user has never accessed from before | 🟡 Medium |
+| Multiple Failed Login Attempts | Repeated failed logins in a set time window (brute force) | 🔴 High |
+| Admin Activity | Any change made by a Salesforce admin account | 🟡 Medium |
+| Mass Download | A user downloading an unusually large number of files/records | 🔴 High |
+| Terminated User Activity | Activity from a user account that should be disabled | 🔴 Critical |
+
+To enable these: **Cloud Apps > Policies > Policy Management** — find each policy, click it, and set it to **Enabled**.
+
+### Creating Custom Activity Policies — Step by Step
+
+For events not covered by built-in policies, you create Activity Policies. Here is the process:
+
+1. Go to: **Cloud Apps > Policies > Policy Management > Create Policy > Activity Policy**
+2. Give the policy a clear name (e.g. `SF - Breakglass Account Login`)
+3. Set filters: App = Salesforce, Activity Type = Login, User = [breakglass account names]
+4. Set Severity = High, Alert = Send email to security team
+5. Click **Create** — the policy is now live
+
+### Custom Policies to Create — Priority List
+
+**1. Breakglass / Local SF Account Login**
+- Filter: Login event + specific breakglass usernames
+- Why: These accounts should almost never be used — any use is notable
+
+**2. Bulk Deletion Operation**
+- Filter: Delete activity + count > 100 records in one session
+- Why: Mass deletion is either a mistake or sabotage — both need investigation
+
+**3. MFA Disabled on Account**
+- Filter: Admin change + activity type = MFA modification
+- Why: Disabling MFA on any account dramatically increases its compromise risk
+
+**4. Audit Logging Disabled**
+- Filter: Setup Audit Trail entry matching audit log setting changes
+- Why: An attacker disabling logging is trying to hide their tracks
+
+**5. New Admin Account Created**
+- Filter: User created + Permission Set = System Administrator
+- Why: New admin accounts created outside normal IT process are a major red flag
+
+**6. Suspicious User Agent**
+- Filter: User agent NOT matching known browser signatures (e.g. matching `python-requests`, `curl`, `Go-http-client`)
+- Why: Scripts or tools hitting the API unexpectedly may be exfiltrating data
+
+---
+
+## 6. Gap Analysis — What the MVP Covers vs What It Cannot
+
+| Requirement | MVP Covered? | Gap | Solution |
+|---|---|---|---|
+| Login Events (IP + Geo) | ✅ Yes | None | DfCA covers this fully |
+| Failed / Successful Logins | ✅ Yes | None | Via Login History logs |
+| Fast Travel / Impossible Travel | ✅ Yes | None | Built-in DfCA policy |
+| Suspicious IP | ✅ Yes | None | Threat intelligence in DfCA |
+| Breakglass Account Use | ⚠️ Partial | No real-time alert by default | Custom policy required |
+| Multiple Failed Logins | ✅ Yes | None | Built-in brute force policy |
+| Session Hijacking Detection | ⚠️ Partial | Limited without Shield | Shield Event Monitoring adds session tracking |
+| Suspicious User Agent | ⚠️ Partial | Manual filter setup required | Custom activity policy needed |
+| Data / File Export Detection | ✅ Yes | None | Event Log Files cover this |
+| Bulk API Data Request | ⚠️ Partial | Threshold tuning needed | Custom policy + threshold config |
+| Bulk Deletion Operations | ⚠️ Partial | Custom policy needed | Activity policy with count filter |
+| Field-level Access Events | ❌ No | ELF does not capture field views | Requires Salesforce Shield |
+| New Account Creation Alert | ✅ Yes | None | Setup Audit Trail via DfCA |
+| Permission Modifications | ✅ Yes | None | Setup Audit Trail covers this |
+| MFA Disabled Event | ⚠️ Partial | Custom policy needed | Map to Setup Audit Trail entry |
+| Audit Logging Disabled | ⚠️ Partial | Custom policy needed | Setup Audit Trail entry exists |
+| Data Masking Changes | ⚠️ Partial | Custom policy needed | Shield adds more granularity |
+| Access Control Setting Changes | ✅ Yes | None | Setup Audit Trail covers sharing/OWD changes |
+
+---
+
+## 7. Implementation Roadmap
+
+| Phase | Task | Priority |
+|---|---|---|
+| **Phase 1 — MVP** | Set up Salesforce ↔ DfCA integration (OAuth connector) | Critical |
+| **Phase 1 — MVP** | Enable all built-in DfCA alert policies for Salesforce | Critical |
+| **Phase 1 — MVP** | Create custom policies: breakglass, bulk delete, MFA disable, audit disable | High |
+| **Phase 1 — MVP** | Verify log ingestion is working (Activity Log in DfCA) | Critical |
+| **Phase 1 — MVP** | Tune alert thresholds to reduce false positives | High |
+| **Phase 2 — Review** | Assess log coverage gaps after 2–4 weeks of data | High |
+| **Phase 2 — Review** | Evaluate Salesforce Shield business case (cost vs gap coverage) | Medium |
+| **Phase 2 — Review** | Document all active policies and write alert runbooks | Medium |
+| **Phase 3 — Expand** | Implement Salesforce Shield (if approved) | TBD |
+| **Phase 3 — Expand** | Enable real-time Event Monitoring and Transaction Security | TBD |
+| **Phase 3 — Expand** | Integrate alerts with SIEM (e.g. Microsoft Sentinel) | TBD |
+
+---
+
+## 8. Key Concepts Glossary
+
+| Term | Plain English |
+|---|---|
+| **OAuth** | A secure way for two systems to authorise each other. DfCA uses it to access Salesforce logs without needing a shared password. |
+| **API** | A way for software to talk to other software. Bad actors can abuse APIs to extract data in bulk without using the Salesforce UI. |
+| **SIEM** | Security Info & Event Management — a system that collects logs from many sources and correlates them (e.g. Microsoft Sentinel, Splunk). The next step after DfCA if you need more power. |
+| **MFA** | Multi-Factor Authentication — requiring a second proof of identity (e.g. a phone app code) beyond just a password. |
+| **Breakglass Account** | An emergency admin account that bypasses SSO. Used only in crises. Any use must be alerted on immediately. |
+| **SSO** | Single Sign-On — one login for multiple apps. Most corporate Salesforce orgs use SSO via Azure AD. Breakglass accounts bypass it. |
+| **Impossible Travel** | When a user logs in from London, then 3 minutes later from Tokyo — physically impossible. Strong indicator of compromise. |
+| **User Agent** | A string sent by a browser or app identifying itself. `Mozilla/5.0` is a browser. `python-requests/2.28` is a script. Unexpected scripts are suspicious. |
+| **OWD (Org-Wide Defaults)** | Salesforce's baseline sharing settings — who can see what by default. Changes to OWD can expose data to the wrong people. |
+| **False Positive** | An alert that fires but is not actually a threat (e.g. a legitimate bulk export triggering a mass download alert). Tuning policies reduces these. |
+| **ELF (Event Log Files)** | Daily CSV log files Salesforce generates covering ~50 event types. DfCA pulls these automatically. The core log source for the MVP. |
+| **DfCA** | Microsoft Defender for Cloud Apps — the tool that connects to Salesforce, monitors activity, and generates security alerts. |
+
+---
+
+## 9. Where to Find Things in Salesforce Setup
+
+| What You Need | Where to Look |
+|---|---|
+| Login History | Setup > Users > Login History |
+| Setup Audit Trail | Setup > Security > Setup Audit Trail |
+| Event Log Files | Setup > Environments > Monitoring > Event Log Files |
+| Connected Apps (see DfCA) | Setup > Apps > Connected Apps > Manage Connected Apps |
+| User Management | Setup > Users > Users |
+| Permission Sets | Setup > Users > Permission Sets |
+| MFA Settings | Setup > Identity > Identity Verification |
+| Session Settings | Setup > Security > Session Settings |
+| Password Policies | Setup > Security > Password Policies |
+| Sharing Settings (OWD) | Setup > Security > Sharing Settings |
+
+**Key URLs:**
+- Defender portal: `https://security.microsoft.com`
+- Microsoft docs for the Salesforce connector: `https://learn.microsoft.com/defender-cloud-apps/protect-salesforce`
+
+---
+
+## 10. Your Immediate Action Items
+
+1. **Schedule a session with your senior** to walk through the DfCA connector setup together (they mentioned doing it on a regular call)
+2. **Read the Microsoft Salesforce connector docs** before the call so you understand each step going in
+3. **Confirm your access** — you need Salesforce System Admin rights AND Microsoft Security Admin / Global Admin rights
+4. **Identify your breakglass account usernames** — you will need these for the custom alert policy
+5. **After integration**, review the Gap Analysis table (Section 6) with your team to build the business case for Shield if needed
+
+> ✅ **The integration is not deeply technical — it is mostly configuration steps in two web portals.** The key skill is understanding what each alert means and making sure the right people get notified. Use this as your reference throughout.
