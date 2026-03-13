@@ -178,7 +178,6 @@ public class CustomerOrderLineHandler {
         //Loop through each paired new/old entry
         for (Integer i = 0; i < newItems.size(); i++) {
             OrderItem newOI = newItems[i];
-            OrderItem oldOI = oldItems[i];
             
             if(existing.containsKey(newOI.Id)) {
                 CustomerOrderLine__c col = existing.get(newOI.Id);
@@ -188,7 +187,7 @@ public class CustomerOrderLineHandler {
                 
                 if (col.blng_LastChargeToDate__c != newOI.blng__LastChargeToDate__c) { col.blng_LastChargeToDate__c = newOI.blng__LastChargeToDate__c; changed = true; }
                 if (col.blng_NextBillingDate__c != newOI.blng__NextBillingDate__c) { col.blng_NextBillingDate__c = newOI.blng__NextBillingDate__c; changed = true; }
-                if (col.Contract_Status__c != newOI.SBQQ__Contract__r.Status) { col.Contract_Status__c = newOI.SBQQ__Contract__r.Status; changed = true; }
+                if (col.Contract_Status__c != newOI.SBQQ__Contract__r.Status) { col.Contract_Status__c = newOI.SBQQ__Contract__c != null ? newOI.SBQQ__Contract__r.Status : null; changed = true; }
                 if (col.End_Date__c != newOI.EndDate) { col.End_Date__c = newOI.EndDate; changed = true; }
                 if (col.OrderItemNumber__c != newOI.OrderItemNumber) { col.OrderItemNumber__c = newOI.OrderItemNumber; changed = true; }
                 if (col.Product_Name__c != (newOI.Product2 != null ? newOI.Product2.Name : null)) { col.Product_Name__c = newOI.Product2 != null ? newOI.Product2.Name : null; changed = true; }
