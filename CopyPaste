@@ -103,13 +103,16 @@ public class CustomerOrderLineHandler {
         for (OrderItem oi : newItems) { oiIds.add(oi.Id); }
         
         //Query existing COLs for duplication prevention
-        Map<Id, CustomerOrderLine__c> existing = new Map<Id, CustomerOrderLine__c>([SELECT Id, OrderItem__c FROM CustomerOrderLine__c WHERE OrderItem__c IN :oiIds]);
+        Map<Id, CustomerOrderLine__c> existingByOrderItem = new Map<Id, CustomerOrderLine__c>();
+        for (CustomerOrderLine__c col : [SELECT Id, OrderItem__c FROM CustomerOrderLine__c WHERE OrderItem__c IN :oiIds]) {
+            existingByOrderItem.put(col.OrderItem__c, col);
+        }
         
         //Build new COLs
         List<CustomerOrderLine__c> colsToInsert = new List<CustomerOrderLine__c>();
         
         for (OrderItem o : newItems){
-            if(!existing.containsKey(o.Id)) {
+            if(!existingByOrderItem.containsKey(o.Id)) {
                 CustomerOrderLine__c col = new CustomerOrderLine__c();
                 col.Name = formatColName(o);
                 col.OrderItem__c = o.Id;
@@ -169,7 +172,7 @@ public class CustomerOrderLineHandler {
         //Query existing COLs
         Map<Id, CustomerOrderLine__c> existing = new Map<Id, CustomerOrderLine__c>([SELECT Id, Name, blng_LastChargeToDate__c, blng_NextBillingDate__c, Contract_Status__c,  
                                                                                     Product_Name__c, End_Date__c, OrderItemNumber__c, Quantity__c, Service_Date__c,
-                                                                                    Subscription_Term_Months__c, Total_Price__c, OrderItem__c
+                                                                                    Subscription_Term_Months__c, Total_Price__c, OrderItem__c, Last_Synced_Date__c
                                                                                     FROM CustomerOrderLine__c 
                                                                                     WHERE OrderItem__c IN :orderIds]);
         
@@ -178,6 +181,7 @@ public class CustomerOrderLineHandler {
         //Loop through each paired new/old entry
         for (Integer i = 0; i < newItems.size(); i++) {
             OrderItem newOI = newItems[i];
+            OrderItem oldOI = oldItems[i];
             
             if(existing.containsKey(newOI.Id)) {
                 CustomerOrderLine__c col = existing.get(newOI.Id);
@@ -185,19 +189,24 @@ public class CustomerOrderLineHandler {
                 //Compare values and update if necessary
                 Boolean changed = false;
                 
-                if (col.blng_LastChargeToDate__c != newOI.blng__LastChargeToDate__c) { col.blng_LastChargeToDate__c = newOI.blng__LastChargeToDate__c; changed = true; }
-                if (col.blng_NextBillingDate__c != newOI.blng__NextBillingDate__c) { col.blng_NextBillingDate__c = newOI.blng__NextBillingDate__c; changed = true; }
+                if (oldOI.blng__LastChargeToDate__c != newOI.blng__LastChargeToDate__c) { col.blng_LastChargeToDate__c = newOI.blng__LastChargeToDate__c; changed = true; }
+                if (oldOI.blng__NextBillingDate__c != newOI.blng__NextBillingDate__c) { col.blng_NextBillingDate__c = newOI.blng__NextBillingDate__c; changed = true; }
                 
                 String newContractStatus = newOI.SBQQ__Contract__c != null ? newOI.SBQQ__Contract__r.Status : null;
-                if (col.Contract_Status__c != newContractStatus) { col.Contract_Status__c = newContractStatus; changed = true; }
+                String oldContractStatus = oldOI.SBQQ__Contract__c != null ? oldOI.SBQQ__Contract__r.Status : null;
+                if (oldContractStatus != newContractStatus) { col.Contract_Status__c = newContractStatus; changed = true; }
                 
-                if (col.End_Date__c != newOI.EndDate) { col.End_Date__c = newOI.EndDate; changed = true; }
-                if (col.OrderItemNumber__c != newOI.OrderItemNumber) { col.OrderItemNumber__c = newOI.OrderItemNumber; changed = true; }
-                if (col.Product_Name__c != (newOI.Product2 != null ? newOI.Product2.Name : null)) { col.Product_Name__c = newOI.Product2 != null ? newOI.Product2.Name : null; changed = true; }
-                if (col.Quantity__c != newOI.Quantity) { col.Quantity__c = newOI.Quantity; changed = true; }
-                if (col.Service_Date__c != newOI.ServiceDate) { col.Service_Date__c = newOI.ServiceDate; changed = true; }
-                if (col.Subscription_Term_Months__c != newOI.SBQQ__DefaultSubscriptionTerm__c) { col.Subscription_Term_Months__c = newOI.SBQQ__DefaultSubscriptionTerm__c; changed = true; }
-                if (col.Total_Price__c != newOI.TotalPrice) { col.Total_Price__c = newOI.TotalPrice; changed = true; }
+                if (oldOI.EndDate != newOI.EndDate) { col.End_Date__c = newOI.EndDate; changed = true; }
+                if (oldOI.OrderItemNumber != newOI.OrderItemNumber) { col.OrderItemNumber__c = newOI.OrderItemNumber; changed = true; }
+                
+                String oldProdName = oldOI.Product2 != null ? oldOI.Product2.Name : null;
+                String newProdName = newOI.Product2 != null ? newOI.Product2.Name : null;
+                if (oldProdName != newProdName) { col.Product_Name__c = newProdName; changed = true; }
+                
+                if (oldOI.Quantity != newOI.Quantity) { col.Quantity__c = newOI.Quantity; changed = true; }
+                if (oldOI.ServiceDate != newOI.ServiceDate) { col.Service_Date__c = newOI.ServiceDate; changed = true; }
+                if (oldOI.SBQQ__DefaultSubscriptionTerm__c != newOI.SBQQ__DefaultSubscriptionTerm__c) { col.Subscription_Term_Months__c = newOI.SBQQ__DefaultSubscriptionTerm__c; changed = true; }
+                if (oldOI.TotalPrice != newOI.TotalPrice) { col.Total_Price__c = newOI.TotalPrice; changed = true; }
                 
                 //if any fields have changed, update the last synched date field, add to colsToUpdate list
                 if (changed) { col.Last_Synced_Date__c = System.now(); colsToUpdate.add(col); }
