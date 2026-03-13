@@ -9,15 +9,15 @@ public class CustomerOrderLineHandler {
         public String operationType;
         // "create", "update", or "delete"
         
-        //@InvocableVariable(required=true)
+        @InvocableVariable
         public OrderItem newRecord;
         // Used for Create or Update operation
         
-        //@InvocableVariable(required=true)
+        @InvocableVariable
         public OrderItem oldRecord;
         // Only used for Update operations
 
-        //@InvocableVariable(required=true)
+        @InvocableVariable
         public Id deletedRecordId;
         // Used for Delete operations
 
@@ -187,7 +187,10 @@ public class CustomerOrderLineHandler {
                 
                 if (col.blng_LastChargeToDate__c != newOI.blng__LastChargeToDate__c) { col.blng_LastChargeToDate__c = newOI.blng__LastChargeToDate__c; changed = true; }
                 if (col.blng_NextBillingDate__c != newOI.blng__NextBillingDate__c) { col.blng_NextBillingDate__c = newOI.blng__NextBillingDate__c; changed = true; }
-                if (col.Contract_Status__c != newOI.SBQQ__Contract__r.Status) { col.Contract_Status__c = newOI.SBQQ__Contract__c != null ? newOI.SBQQ__Contract__r.Status : null; changed = true; }
+                
+                String newContractStatus = newOI.SBQQ__Contract__c != null ? newOI.SBQQ__Contract__r.Status : null;
+                if (col.Contract_Status__c != newContractStatus) { col.Contract_Status__c = newContractStatus; changed = true; }
+                
                 if (col.End_Date__c != newOI.EndDate) { col.End_Date__c = newOI.EndDate; changed = true; }
                 if (col.OrderItemNumber__c != newOI.OrderItemNumber) { col.OrderItemNumber__c = newOI.OrderItemNumber; changed = true; }
                 if (col.Product_Name__c != (newOI.Product2 != null ? newOI.Product2.Name : null)) { col.Product_Name__c = newOI.Product2 != null ? newOI.Product2.Name : null; changed = true; }
