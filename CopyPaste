@@ -1,62 +1,63 @@
-public with sharing class CustomerOrderLineHandler {
-
-    /**
+public class CustomerOrderLineHandler {
+    
+    private Static Integer insertCount = 0;
+    private Static Integer updateCount = 0;
+    private Static Integer deleteUpdateCount = 0;
+    private Static Integer updateDeletedCount = 0;
+    
+	/**
      * Wrapper class to accept data from a Flow.
      * This allows passing different values depending on
      * whether the record is being created, updated, or deleted.
      */
     public class RequestWrapper {
         @InvocableVariable(required=true)
-        public String operationType;   
+        public String operationType;
         // "create", "update", or "delete"
-
-        @InvocableVariable
-        public OrderItem newRecord;    
-        // Used for Create or Update operations
-
-        @InvocableVariable
-        public OrderItem oldRecord;    
+        
+        @InvocableVariable(required=true)
+        public OrderItem newRecord;
+        // Used for Create or Update operation
+        
+        @InvocableVariable(required=true)
+        public OrderItem oldRecord;
         // Only used for Update operations
 
-        @InvocableVariable
-        public Id deletedRecordId;     
+        @InvocableVariable(required=true)
+        public Id deletedRecordId;
         // Used for Delete operations
+
     }
-
-
-    /**
+    
+	/**
      * Single entry point for Flow.
      * Salesforce only allows ONE @InvocableMethod per class,
      * so this method determines which internal handler method to call.
      */
-    @InvocableMethod(label='Process OrderItem Event')
-    public static void process(List<RequestWrapper> requests) {
 
-        // Lists for bulk processing
+	@InvocableMethod(label='Process OrderItem Event')
+    public static void process(List<RequestWrapper> requests){
+        
+        //Lists for bulk processing
         List<OrderItem> createList = new List<OrderItem>();
         List<OrderItem> updateNew = new List<OrderItem>();
         List<OrderItem> updateOld = new List<OrderItem>();
-        List<Id> deleteList = new List<Id>();
-
-        // Loop through wrapper payloads from the Flow
-        for (RequestWrapper req : requests) {
-
-            // Sort into correct operation buckets
+        List<Id> updateDeleteList = new List<Id>();
+        
+      	//Loop through wrapper payloads from the flow
+        for (RequestWrapper req : requests){
+            //sort into correct operation buckets
             if (req.operationType == 'create' && req.newRecord != null) {
                 createList.add(req.newRecord);
             }
-            else if (req.operationType == 'update' &&
-                     req.newRecord != null &&
-                     req.oldRecord != null) {
+            else if (req.operationType == 'update' && req.newRecord != null && req.oldRecord != null) {
                 updateNew.add(req.newRecord);
                 updateOld.add(req.oldRecord);
             }
-            else if (req.operationType == 'delete' &&
-                     req.deletedRecordId != null) {
-                deleteList.add(req.deletedRecordId);
+            else if (req.operationtype == 'delete' && req.deletedRecordId != null) {
+                updateDeleteList.add(req.deletedRecordId);
             }
         }
-
         // Call internal handler methods based on collected data
         if (!createList.isEmpty()) {
             handleCreates(createList);
@@ -64,111 +65,227 @@ public with sharing class CustomerOrderLineHandler {
         if (!updateNew.isEmpty()) {
             handleUpdates(updateNew, updateOld);
         }
-        if (!deleteList.isEmpty()) {
-            handleDeletes(deleteList);
+        if (!updateDeleteList.isEmpty()) {
+            handleUpdateToDeletes(updateDeleteList);
         }
     }
-
-
-    /**
+    
+    /*
+     * Utility method used to generate the given name prefixed with "[DEL] " to indicate a soft-deleted/archived record.
+        * - If originalName is null or blank, returns "[DEL]".
+        * - If originalName already starts with "[DEL]", returns it unchanged (prevents double-tagging).
+        * - Otherwise, returns "[DEL] " + originalName.
+	*/
+    private Static String prependDeletedTag(String originalName) {
+        if (originalName == null || String.isBlank(originalName)) {
+            return '[DEL]';
+        }
+        if (originalName.startsWith('[DEL]')) {
+            return originalName;
+        }
+        return '[DEL] ' + originalName;
+    }
+    
+    /*
+        * Utility method used to generate a friendly, unique Name value for each CustomerOrderLine__c record.
+        *  - Uses OrderItemNumber when available, otherwise falls back to OrderItem Id. Includes Product name when present.
+        * Example Output: "COL-12345-ProductName"
+        */
+    private static String formatColName(OrderItem o){
+        String key = (o.OrderItemNumber != null) ? o.OrderItemNumber : String.valueOf(o.Id);
+        String prod = (o.Product2 != null && o.Product2.Name != null) ? '-' + o.Product2.Name : '';
+        return 'COL-' + key + prod;
+    }
+        
+	/**
      * CREATE LOGIC
      * Creates new CustomerOrderLine__c records when new OrderItems are created.
      */
     private static void handleCreates(List<OrderItem> newItems) {
-
-        // Collect OrderItem IDs
+        
+        //Collect OrderItem Ids
         Set<Id> oiIds = new Set<Id>();
-        for (OrderItem oi : newItems) oiIds.add(oi.Id);
-
-        // Query existing COLs for duplication prevention
-        Map<Id, CustomerOrderLine__c> existing = new Map<Id, CustomerOrderLine__c>(
-            [SELECT Id, OrderItem__c FROM CustomerOrderLine__c WHERE OrderItem__c IN :oiIds]
-        );
-
-        // Build new COLs
-        List<CustomerOrderLine__c> toInsert = new List<CustomerOrderLine__c>();
-
-        for (OrderItem oi : newItems) {
-            if (!existing.containsKey(oi.Id)) {
+        for (OrderItem oi : newItems) { oiIds.add(oi.Id); }
+        
+        //Query existing COLs for duplication prevention
+        Map<Id, CustomerOrderLine__c> existing = new Map<Id, CustomerOrderLine__c>([SELECT Id, OrderItem__c FROM CustomerOrderLine__c WHERE OrderItem__c IN :oiIds]);
+        
+        //Build new COLs
+        List<CustomerOrderLine__c> colsToInsert = new List<CustomerOrderLine__c>();
+        
+        for (OrderItem o : newItems){
+            if(!existing.containsKey(o.Id)) {
                 CustomerOrderLine__c col = new CustomerOrderLine__c();
-                col.OrderItem__c = oi.Id;
-                col.Name = 'COL-' + oi.OrderItemNumber;
-                col.Product_Name__c = oi.Product2 != null ? oi.Product2.Name : null;
-                col.Quantity__c = oi.Quantity;
-                col.Total_Price__c = oi.TotalPrice;
-                col.Service_Date__c = oi.ServiceDate;
-                col.End_Date__c = oi.EndDate;
-                col.Subscription_Term_Months__c = oi.SBQQ__DefaultSubscriptionTerm__c;
-                col.Account__c = oi.SBQQ__Subscription__r != null ? oi.SBQQ__Subscription__r.SBQQ__Account__c : null;
-                toInsert.add(col);
+                col.Name = formatColName(o);
+                col.OrderItem__c = o.Id;
+                col.Account__c = o.SBQQ__Subscription__c != null ? o.SBQQ__Subscription__r.SBQQ__Account__c : null;
+                col.blng_LastChargeToDate__c = o.blng__LastChargeToDate__c;
+                col.blng_NextBillingDate__c = o.blng__NextBillingDate__c;
+                col.Contract_Status__c = o.SBQQ__Contract__c != null ? o.SBQQ__Contract__r.Status : null;
+                col.End_Date__c = o.EndDate;
+                col.Last_Synced_Date__c = System.now();
+                col.OrderItemNumber__c = o.OrderItemNumber;
+                col.Product_Name__c = (o.Product2 != null) ? o.Product2.Name : null;
+                col.Quantity__c = o.Quantity;
+                col.Service_Date__c = o.ServiceDate;
+                col.Subscription_Id__c = o.SBQQ__Subscription__c;
+                col.Subscription_Term_Months__c = o.SBQQ__DefaultSubscriptionTerm__c;
+                col.Total_Price__c = o.TotalPrice;
+                colsToInsert.add(col);
             }
         }
+        if (colsToInsert.isEmpty()) { return; }
+        
+        //Insert the COL records with partial success
+        Database.SaveResult[] results = Database.insert(colsToInsert, /*allOrNone*/ false);
+        
+        //Tally results
+        insertCount += colsToInsert.size();
+        Integer failCount = 0;
+        
+        //Collect error details for the email body
+        List<String> errorLines = new List<String>();
+        
+        for (Integer i = 0; i < results.size(); i++) {
+            Database.SaveResult sr = results[i];
+            
+            if(!sr.isSuccess()) {
+                failCount++;
+                for (Database.Error e : sr.getErrors()) {
+                    // Include index, status, message, and any field names
+                    errorLines.add('Idx ' + i + ' | Status=' + String.valueOf(e.getStatusCode()) +' | Msg="' + e.getMessage() + '"' +(e.getFields() != null && !e.getFields().isEmpty()
+                    ? ' | Fields=' + String.valueOf(e.getFields()) : ''));
+                }
+            }
+        }
+        
+        // Build and send the summary email
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        
+        // Send to the running user;
+        mail.setToAddresses(new String[] { UserInfo.getUserEmail() });
+        mail.setSubject('Customer Order Lines - Create Summary');
+        
+        // Compose the body
+        String body ='Create operation completed in handleCreates().' + '\n\n' +'Total attempted inserts: ' + String.valueOf(colsToInsert.size()) + '\n' +
+            'Successful inserts: ' + String.valueOf(colsToInsert.size() - failCount) + '\n' +'Failed inserts: ' + String.valueOf(failCount) + '\n';
+        
+        if (!errorLines.isEmpty()) {
+            // Include a brief error section (trim if you expect many failures)
+            body += '\nError details:\n- ' + String.join(errorLines, '\n- ');
+        }
+        mail.setPlainTextBody(body);
+        
+        // Send the email
+        Messaging.sendEmail(new Messaging.SingleEmailMessage[] { mail });
 
-        if (!toInsert.isEmpty()) insert toInsert;
     }
-
-
-    /**
+    
+	/**
      * UPDATE LOGIC
      * Updates existing CustomerOrderLine__c when OrderItem fields change.
      */
     private static void handleUpdates(List<OrderItem> newItems, List<OrderItem> oldItems) {
-
-        // Collect OrderItem IDs
-        Set<Id> oiIds = new Set<Id>();
-        for (OrderItem oi : newItems) oiIds.add(oi.Id);
-
-        // Query existing COLs
-        Map<Id, CustomerOrderLine__c> colMap = new Map<Id, CustomerOrderLine__c>(
-            [SELECT Id, OrderItem__c, Quantity__c, Total_Price__c, Product_Name__c
-             FROM CustomerOrderLine__c WHERE OrderItem__c IN :oiIds]
-        );
-
-        List<CustomerOrderLine__c> toUpdate = new List<CustomerOrderLine__c>();
-
-        // Loop through each paired new/old entry
+        
+        //Collect Order Ids 
+        Set<Id> orderIds = new Set<Id>();
+        for (OrderItem oi : newItems) { orderIds.add(oi.Id); }
+        
+        //Query existing COLs
+        Map<Id, CustomerOrderLine__c> existing = new Map<Id, CustomerOrderLine__c>([SELECT Id, Name, blng_LastChargeToDate__c, blng_NextBillingDate__c, Contract_Status__c,  
+                                                                                    Product_Name__c, End_Date__c, OrderItemNumber__c, Quantity__c, Service_Date__c,
+                                                                                    Subscription_Term_Months__c, Total_Price__c, OrderItem__c
+                                                                                    FROM CustomerOrderLine__c 
+                                                                                    WHERE OrderItem__c IN :orderIds]);
+        
+        List<CustomerOrderLine__c> colsToUpdate = new List<CustomerOrderLine__c>();
+        
+        //Loop through each paired new/old entry
         for (Integer i = 0; i < newItems.size(); i++) {
             OrderItem newOI = newItems[i];
             OrderItem oldOI = oldItems[i];
-
-            if (colMap.containsKey(newOI.Id)) {
-                CustomerOrderLine__c col = colMap.get(newOI.Id);
-
-                // Compare values and update if necessary
+            
+            if(existing.containsKey(newOI.Id)) {
+                CustomerOrderLine__c col = existing.get(newOI.Id);
+                
+                //Compare values and update if necessary
                 Boolean changed = false;
-
-                if (col.Quantity__c != newOI.Quantity) {
-                    col.Quantity__c = newOI.Quantity;
-                    changed = true;
-                }
-                if (col.Total_Price__c != newOI.TotalPrice) {
-                    col.Total_Price__c = newOI.TotalPrice;
-                    changed = true;
-                }
-                if (col.Product_Name__c != (newOI.Product2 != null ? newOI.Product2.Name : null)) {
-                    col.Product_Name__c = newOI.Product2 != null ? newOI.Product2.Name : null;
-                    changed = true;
-                }
-
-                if (changed) toUpdate.add(col);
+                
+                if (col.blng_LastChargeToDate__c != newOI.blng__LastChargeToDate__c) { col.blng_LastChargeToDate__c = newOI.blng__LastChargeToDate__c; changed = true; }
+                if (col.blng_NextBillingDate__c != newOI.blng__NextBillingDate__c) { col.blng_NextBillingDate__c = newOI.blng__NextBillingDate__c; changed = true; }
+                if (col.Contract_Status__c != newOI.SBQQ__Contract__c) { col.Contract_Status__c = newOI.SBQQ__Contract__c; changed = true; }
+                if (col.End_Date__c != newOI.EndDate) { col.End_Date__c = newOI.EndDate; changed = true; }
+                if (col.OrderItemNumber__c != newOI.OrderItemNumber) { col.OrderItemNumber__c = newOI.OrderItemNumber; changed = true; }
+                if (col.Product_Name__c != (newOI.Product2 != null ? newOI.Product2.Name : null)) { col.Product_Name__c = newOI.Product2 != null ? newOI.Product2.Name : null; changed = true; }
+                if (col.Quantity__c != newOI.Quantity) { col.Quantity__c = newOI.Quantity; changed = true; }
+                if (col.Service_Date__c != newOI.ServiceDate) { col.Service_Date__c = newOI.ServiceDate; changed = true; }
+                if (col.Subscription_Term_Months__c != newOI.SBQQ__DefaultSubscriptionTerm__c) { col.Subscription_Term_Months__c = newOI.SBQQ__SubscriptionTerm__c; changed = true; }
+                if (col.Total_Price__c != newOI.TotalPrice) { col.Total_Price__c = newOI.TotalPrice; changed = true; }
+                
+                //if any fields have changed, update the last synched date field, add to colsToUpdate list
+                if (changed) { col.Last_Synced_Date__c = System.now(); colsToUpdate.add(col); }
             }
+            if (!colsToUpdate.isEmpty()) { update colsToUpdate; }
         }
-
-        if (!toUpdate.isEmpty()) update toUpdate;
     }
-
-
-    /**
+    
+	/**
      * DELETE LOGIC
      * Deletes the CustomerOrderLine__c when its OrderItem is deleted.
      */
-    private static void handleDeletes(List<Id> deletedIds) {
+    private static void handleUpdateToDeletes(List<Id> deletedIds) {
+        List<CustomerOrderLine__c> deletedToUpdate = new List<CustomerOrderLine__c>();
+        
+        List<CustomerOrderLine__c> orphanedCols = new List<CustomerOrderLine__c>([SELECT Id, Name FROM CustomerOrderLine__c WHERE OrderItem__c IN :deletedIds]);
+        
+        for (CustomerOrderLine__c col : orphanedCols) {
+            col.Name = prependDeletedTag(col.Name);
+            deletedToUpdate.add(col);
+        }
 
-        // Query COL records linked to deleted OrderItems
-        List<CustomerOrderLine__c> toDelete = [
-            SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c IN :deletedIds
-        ];
-
-        if (!toDelete.isEmpty()) delete toDelete;
+		if (deletedToUpdate.isEmpty()) { return; }
+        
+        //Update the COL records with partial success
+        Database.SaveResult[] results = Database.update(deletedToUpdate, false);
+        
+        //Tally results
+        updateDeletedCount += deletedToUpdate.size();
+        Integer failCount = 0;
+        
+        //Collect error details for the email body
+        List<String> errorLines = new List<String>();
+        
+        for (Integer i = 0; i < results.size(); i++) {
+            Database.SaveResult sr = results[i];
+            
+            if(!sr.isSuccess()) {
+                failCount++;
+                for (Database.Error e : sr.getErrors()) {
+                    // Include index, status, message, and any field names
+                    errorLines.add('Idx ' + i + ' | Status=' + String.valueOf(e.getStatusCode()) +' | Msg="' + e.getMessage() + '"' +(e.getFields() != null && !e.getFields().isEmpty()
+                    ? ' | Fields=' + String.valueOf(e.getFields()) : ''));
+                }
+            }
+        }
+        
+        // Build and send the summary email
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        
+        // Send to the running user;
+        mail.setToAddresses(new String[] { UserInfo.getUserEmail() });
+        mail.setSubject('Customer Order Lines - Update to deleted records Summary');
+        
+        // Compose the body
+        String body ='Update operation on deleted records completed in handleDeletes().' + '\n\n' +'Total attempted updates: ' + String.valueOf(deletedToUpdate.size()) + '\n' +
+            'Successful updates: ' + String.valueOf(deletedToUpdate.size() - failCount) + '\n' +'Failed updates: ' + String.valueOf(failCount) + '\n';
+        
+        if (!errorLines.isEmpty()) {
+            // Include a brief error section (trim if you expect many failures)
+            body += '\nError details:\n- ' + String.join(errorLines, '\n- ');
+        }
+        mail.setPlainTextBody(body);
+        
+        // Send the email
+        Messaging.sendEmail(new Messaging.SingleEmailMessage[] { mail });
     }
 }
