@@ -1,0 +1,97 @@
+/**
+ * NotificationService
+ * -------------------
+ * PURPOSE: When a batch of records is saved to Salesforce and some of them fail,
+ * this class sends an email to the person who ran the operation so they know
+ * something went wrong. If everything succeeded, no email is sent.
+ *
+ * NOTES:
+ * - Sending emails counts against Salesforce's daily email limits.
+ * - In test runs, real emails are never sent, but the invocation is still counted.
+ *
+ * CHANGES FROM ORIGINAL:
+ * - No changes to this class itself. The bugs were only in the test file (see below).
+ */
+public with sharing class NotificationService {
+
+    public static void handleResults(String subject, Integer totalAttempted, Database.SaveResult[] results){
+        Integer failCount = 0;
+
+        if (results == null || results.isEmpty()) return;
+
+        for(Database.SaveResult sr : results){
+            if(sr == null || !sr.isSuccess()){ failCount++; }
+        }
+
+        if(failCount == 0){ return; }
+
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        mail.setToAddresses(new String[] { UserInfo.getUserEmail() });
+        mail.setSubject(subject);
+
+        String body = 'One or more records failed during the operation.\n\n' +
+            'Total attempted: ' + totalAttempted + '\n' +
+            'Failed: ' + failCount + '\n' +
+            'Successful: ' + (totalAttempted - failCount);
+
+        mail.setPlainTextBody(body);
+        Messaging.sendEmail(new Messaging.SingleEmailMessage[]{ mail });
+    }
+}
+
+##################################################################
+
+/**
+ * NotificationServiceTest
+ * -----------------------
+ * PURPOSE: Tests that NotificationService sends an email when there are failures,
+ * and does NOT send an email when everything succeeds.
+ *
+ * CHANGES FROM ORIGINAL:
+ *
+ * 1. testHandleResults_withFailures_sendsEmail — Assert.areEqual → Assert.isTrue
+ *    ============================================================================
+ *    The original code was:
+ *        Assert.areEqual(afterEmails > beforeEmails, 'Email should be sent...');
+ *
+ *    Assert.areEqual() expects THREE arguments: (expectedValue, actualValue, message).
+ *    The original only passed TWO arguments — a true/false expression and a string.
+ *    Salesforce treated the true/false as the "expected" value and the string as
+ *    the "actual" value. Since a string is never equal to true/false, this assertion
+ *    would ALWAYS pass regardless of what the code did — meaning it wasn't testing
+ *    anything at all.
+ *
+ *    The fix: use Assert.isTrue() which is designed for true/false checks.
+ *    It takes the condition as the first argument and an error message as the second.
+ */
+@IsTest
+private class NotificationServiceTest {
+
+    @IsTest
+    static void testHandleResults_noFailures_noEmail() {
+        Account a = new Account(Name = 'Notif OK');
+        Database.SaveResult[] sr = Database.insert(new List<Account>{ a }, false);
+
+        Integer beforeEmails = Limits.getEmailInvocations();
+        NotificationService.handleResults('Subject OK', 1, sr);
+        Integer afterEmails = Limits.getEmailInvocations();
+
+        Assert.areEqual(beforeEmails, afterEmails, 'No email should be sent on zero failures');
+    }
+
+    @IsTest
+    static void testHandleResults_withFailures_sendsEmail() {
+        Account bad = new Account(); // missing Name — will fail validation
+        Database.SaveResult[] sr = Database.insert(new List<Account>{ bad }, false);
+
+        Integer beforeEmails = Limits.getEmailInvocations();
+        Test.startTest();
+            NotificationService.handleResults('Subject Fail', 1, sr);
+        Test.stopTest();
+        Integer afterEmails = Limits.getEmailInvocations();
+
+        // FIXED: was Assert.areEqual(afterEmails > beforeEmails, 'message') — two args, always passed.
+        // Now uses Assert.isTrue() which correctly checks that the condition is true.
+        Assert.isTrue(afterEmails > beforeEmails, 'Email should be sent when any failures occur');
+    }
+}
