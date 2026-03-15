@@ -1,0 +1,74 @@
+/**
+ * CustomerOrderLineRepository
+ * ---------------------------
+ * PURPOSE: This is the "data access" layer — its only job is to talk to the
+ * database. Other classes call this instead of writing SOQL queries themselves.
+ * This keeps database logic in one place and makes the rest of the code easier to read.
+ *
+ * getByOrderItemIds(Set<Id>):
+ *   Give it a set of OrderItem Ids, and it returns a Map where each key is an
+ *   OrderItem Id and each value is the matching CustomerOrderLine__c record.
+ *   This makes it easy to do fast lookups without looping through a list.
+ *
+ * NOTES:
+ * - Only queries the fields that the service layer actually needs.
+ * - The method handles null Ids internally (removes them before querying).
+ *
+ * CHANGES FROM ORIGINAL:
+ * - No logic changes. The doc comment previously said "filter nulls at the caller"
+ *   but the method was already filtering nulls itself. Updated the comment to
+ *   accurately describe what the code actually does — the internal null-cleanup
+ *   has been kept as a safety net, and the misleading contract claim is removed.
+ */
+public with sharing class CustomerOrderLineRepository {
+
+    public static Map<Id, CustomerOrderLine__c> getByOrderItemIds(Set<Id> ids) {
+        
+        Map<Id, CustomerOrderLine__c> resultMap = new Map<Id, CustomerOrderLine__c>();
+
+        if (ids == null || ids.isEmpty()) return resultMap;
+
+        // Remove any null values from the set before using it in a query
+        Set<Id> cleaned = new Set<Id>();
+        for (Id i : ids) if (i != null) cleaned.add(i);
+        if (cleaned.isEmpty()) return resultMap;
+
+        for (CustomerOrderLine__c col : [
+            SELECT Id, Name, blng_LastChargeToDate__c, blng_NextBillingDate__c, Contract_Status__c,
+                   Product_Name__c, End_Date__c, OrderItemNumber__c, Quantity__c, Service_Date__c,
+                   Subscription_Term_Months__c, Total_Price__c, OrderItem__c, Last_Synced_Date__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c IN :cleaned
+        ]){
+            resultMap.put(col.OrderItem__c, col);
+        }
+        return resultMap;
+    }
+}
+
+################################
+
+/**
+ * CustomerOrderLineRepositoryTest
+ * --------------------------------
+ * PURPOSE: Tests that the repository correctly returns a map of
+ * CustomerOrderLine__c records keyed by their OrderItem Id,
+ * and that null Ids in the input set are safely ignored.
+ *
+ * CHANGES FROM ORIGINAL:
+ * - No changes needed. This test was already correct.
+ */
+@IsTest
+private with sharing class CustomerOrderLineRepositoryTest {
+
+    @IsTest
+    static void testGetByOrderItemIds_returnsMapKeyedByOrderItem() {
+        CustomerOrderLineTestDataFactory.OrderBundle b = CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CustomerOrderLine__c col = CustomerOrderLineTestDataFactory.createColLinkedTo(b.orderItem, 'Repo Test');
+
+        Map<Id, CustomerOrderLine__c> byOi = CustomerOrderLineRepository.getByOrderItemIds(new Set<Id>{ b.orderItem.Id, null });
+
+        Assert.areEqual(1, byOi.size(), 'Should return exactly one mapping');
+        Assert.areEqual(col.Id, byOi.get(b.orderItem.Id).Id, 'Mapping should point to the created COL');
+    }
+}
