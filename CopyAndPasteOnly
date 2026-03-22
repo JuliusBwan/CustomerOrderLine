@@ -36,10 +36,26 @@ Access Service Cloud Real Time API (scrt_api)
 explain in few terms to a junior "External Client Apps
 Integrate third-party apps with Salesforce using APIs and standard protocols, such as SAML, OAuth, and OpenID Connect using External Client Apps. These settings apply to all External Client Apps configured in your org.
 
-Allow access to External Client App consumer secrets via Metadata API
+Allow access to External Client App consumer secrets via Metadata API (checkbox)
 Allow the View External Client App Consumer Secrets in Metadata user permission to be assigned to users. Users with this permission can view External Client App consumer secrets in Metadata API responses. If this setting is disabled and you want to edit it, contact Salesforce Customer Support.
 
-Allow access to External Client App consumer secrets via Metadata API
-Off
+Allow access to External Client App consumer secrets via Metadata API (checkbox)
 Allow access to External Client App consumer secrets via REST API
 Allow users to access External Client App consumer secrets through the OAuth credentials resources for Connect REST API."
+
+
+Flow Enablement
+Enable Client Credentials Flow (checkbox)
+Enable Authorization Code and Credentials Flow (checkbox)
+Require user credentials in the POST body for Authorization Code and Credentials Flow (checkbox)
+Enable Device Flow (checkbox)
+Enable JWT Bearer Flow (checkbox)
+Enable Token Exchange Flow (checkbox)
+
+
+Security
+Require secret for Web Server Flow (checkbox)
+Require secret for Refresh Token Flow (checkbox)
+Require Proof Key for Code Exchange (PKCE) extension for Supported Authorization Flows (checkbox)
+Enable Refresh Token Rotation (checkbox)
+Issue JSON Web Token (JWT)-based access tokens for named users (checkbox)
