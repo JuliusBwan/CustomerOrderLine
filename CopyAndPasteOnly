@@ -59,3 +59,9 @@ Require secret for Refresh Token Flow (checkbox)
 Require Proof Key for Code Exchange (PKCE) extension for Supported Authorization Flows (checkbox)
 Enable Refresh Token Rotation (checkbox)
 Issue JSON Web Token (JWT)-based access tokens for named users (checkbox)
+
+
+OAuth Flows and External Client App Enhancements
+Enable Client Credentials Flow (checkbox)
+*Run As (Username) -> text input
+
