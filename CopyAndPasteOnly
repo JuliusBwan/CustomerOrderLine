@@ -60,8 +60,9 @@ Require Proof Key for Code Exchange (PKCE) extension for Supported Authorization
 Enable Refresh Token Rotation (checkbox)
 Issue JSON Web Token (JWT)-based access tokens for named users (checkbox)
 
-
-OAuth Flows and External Client App Enhancements
+Enable Authorization Code and Credentials Flow
+Require user credentials in the POST body for Authorization Code and Credentials Flow (checkbox)
+OAuth Flows and External Client App Enhancements (inner checkbox dependent on the one above)
 Enable Client Credentials Flow (checkbox)
 *Run As (Username) -> text input
 
