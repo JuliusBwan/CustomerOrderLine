@@ -1,0 +1,4 @@
+what areconnected apps in salesforce and how, why, when do they work? explain to 11yr old
+as an 11year old, all this doesnt make sense. connected apps, oauth 2.0, external client apps. explain in simple terms, use analogies, scenarios, real life examples.. let's say i want to connect microsoft defender for cloud apps that ingest salesforce logs or a slack app that sends salesforce leads, account data into slack channels. explain in simpler terms the whole process from beginning to end on both sides of the systems. 
+
+in fewer words, you're saying, if i want to connect an external app to sf, i create a connected app for it, set up permissions? when do i use oauth? does the external system create the external client app into salesforce on its own? explain in few words
