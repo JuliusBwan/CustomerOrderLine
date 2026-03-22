@@ -2,3 +2,38 @@ what areconnected apps in salesforce and how, why, when do they work? explain to
 as an 11year old, all this doesnt make sense. connected apps, oauth 2.0, external client apps. explain in simple terms, use analogies, scenarios, real life examples.. let's say i want to connect microsoft defender for cloud apps that ingest salesforce logs or a slack app that sends salesforce leads, account data into slack channels. explain in simpler terms the whole process from beginning to end on both sides of the systems. 
 
 in fewer words, you're saying, if i want to connect an external app to sf, i create a connected app for it, set up permissions? when do i use oauth? does the external system create the external client app into salesforce on its own? explain in few words
+
+
+OAuth Scopes
+Item Perform requests at any time (refresh_token, offline_access) moved to the list Selected OAuth ScopesPress Ctrl (Cmd on Mac) + Left Arrow or Ctrl (Cmd on Mac) + Right Arrow to move items between lists. Supports single character navigation. Press CTRL + Space key to select the option.
+Available OAuth Scopes
+Access the identity URL service (id, profile, email, address, phone)
+Manage user data via Web browsers (web)
+Full access (full)
+Manage user data via APIs (api)
+Perform requests at any time (refresh_token, offline_access)
+Access Connect REST API resources (chatter_api)
+Access Visualforce applications (visualforce)
+Access unique user identifiers (openid)
+Access custom permissions (custom_permissions)
+Access Analytics REST API resources (wave_api)
+Access Analytics REST API Charts Geodata resources (eclair_api)
+Manage Pardot services (pardot_api)
+Access Lightning applications (lightning)
+Access content resources (content)
+Manage Data Cloud Ingestion API data (cdp_ingest_api)
+Manage Data Cloud profile data (cdp_profile_api)
+Perform ANSI SQL queries on Data Cloud data (cdp_query_api)
+Access chatbot services (chatbot_api)
+Perform segmentation on Data Cloud data (cdp_segment_api)
+Manage Data Cloud Identity Resolution (cdp_identityresolution_api)
+Manage Data Cloud Calculated Insight data (cdp_calculated_insight_api)
+Access the Salesforce API Platform (sfap_api)
+Access Interaction API resources (interaction_api)
+Access all Data Cloud API resources (cdp_api)
+Access Einstein GPT services (einstein_gpt_api)
+Access Headless Passwordless Login API (pwdless_login_api)
+Access Headless Forgot Password API (forgot_password)
+Access Headless Registration API (user_registration_api)
+Access Salesforce hosted MCP servers (mcp_api)
+Access Service Cloud Real Time API (scrt_api)
