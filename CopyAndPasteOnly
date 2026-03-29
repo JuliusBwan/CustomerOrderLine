@@ -1,67 +1,131 @@
+Operation : Batch COL Insert
+Attempted : 401
+Succeeded : 359
+Failed    : 42
 
-OAuth Scopes
-Available OAuth Scopes
-Access the identity URL service (id, profile, email, address, phone)
-Manage user data via Web browsers (web)
-Full access (full)
-Manage user data via APIs (api)
-Perform requests at any time (refresh_token, offline_access)
-Access Connect REST API resources (chatter_api)
-Access Visualforce applications (visualforce)
-Access unique user identifiers (openid)
-Access custom permissions (custom_permissions)
-Access Analytics REST API resources (wave_api)
-Access Analytics REST API Charts Geodata resources (eclair_api)
-Manage Pardot services (pardot_api)
-Access Lightning applications (lightning)
-Access content resources (content)
-Manage Data Cloud Ingestion API data (cdp_ingest_api)
-Manage Data Cloud profile data (cdp_profile_api)
-Perform ANSI SQL queries on Data Cloud data (cdp_query_api)
-Access chatbot services (chatbot_api)
-Perform segmentation on Data Cloud data (cdp_segment_api)
-Manage Data Cloud Identity Resolution (cdp_identityresolution_api)
-Manage Data Cloud Calculated Insight data (cdp_calculated_insight_api)
-Access the Salesforce API Platform (sfap_api)
-Access Interaction API resources (interaction_api)
-Access all Data Cloud API resources (cdp_api)
-Access Einstein GPT services (einstein_gpt_api)
-Access Headless Passwordless Login API (pwdless_login_api)
-Access Headless Forgot Password API (forgot_password)
-Access Headless Registration API (user_registration_api)
-Access Salesforce hosted MCP servers (mcp_api)
-Access Service Cloud Real Time API (scrt_api)
+=== Failure Detail ===
+Record #8:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000000626-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
 
+Record #94:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001156-UK Addresses with Multi Residency and Not Yet Built - Large DL- (RM Dom License) - Both Cap&amp;Vfy (max length=80)
 
-"External Client Apps
-Integrate third-party apps with Salesforce using APIs and standard protocols, such as SAML, OAuth, and OpenID Connect using External Client Apps. These settings apply to all External Client Apps configured in your org.
+Record #95:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001158-Volume for UK + MR + NYB - (RM Domain License) - Both Cap+Vfy - Billing (max length=80)
 
-Allow access to External Client App consumer secrets via Metadata API (checkbox)
-Allow the View External Client App Consumer Secrets in Metadata user permission to be assigned to users. Users with this permission can view External Client App consumer secrets in Metadata API responses. If this setting is disabled and you want to edit it, contact Salesforce Customer Support.
+Record #103:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001526-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify (max length=80)
 
-Allow access to External Client App consumer secrets via Metadata API (checkbox)
-Allow access to External Client App consumer secrets via REST API
-Allow users to access External Client App consumer secrets through the OAuth credentials resources for Connect REST API."
+Record #104:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001527-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify - Billing (max length=80)
 
+Record #105:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001560-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify (max length=80)
 
-Flow Enablement
-Enable Client Credentials Flow (checkbox)
-Enable Authorization Code and Credentials Flow (checkbox)
-Require user credentials in the POST body for Authorization Code and Credentials Flow (checkbox)
-Enable Device Flow (checkbox)
-Enable JWT Bearer Flow (checkbox)
-Enable Token Exchange Flow (checkbox)
+Record #106:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001561-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify - Billing (max length=80)
 
+Record #107:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001618-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify (max length=80)
 
-Security
-Require secret for Web Server Flow (checkbox)
-Require secret for Refresh Token Flow (checkbox)
-Require Proof Key for Code Exchange (PKCE) extension for Supported Authorization Flows (checkbox)
-Enable Refresh Token Rotation (checkbox)
-Issue JSON Web Token (JWT)-based access tokens for named users (checkbox)
-*Run As (Username) -> text input
+Record #108:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001619-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify - Billing (max length=80)
 
+Record #109:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001672-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify (max length=80)
 
+Record #110:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001673-UK Addresses with Multi Residency and Not Yet Built - Small TL &lt;1.5 Million - Verify - Billing (max length=80)
 
-Enable Authorization Code and Credentials Flow (checkbox)
-Require user credentials in the POST body for Authorization Code and Credentials Flow (inner checkbox)
+Record #112:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001842-UK Addresses with Multi Residency and Not Yet Built - Large DL- (RM Dom License) - Both Cap&amp;Vfy (max length=80)
+
+Record #114:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001844-Volume for UK + MR + NYB - (RM Domain License) - Both Cap+Vfy - Billing (max length=80)
+
+Record #122:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001811-UK Addresses with Multi Residency - Large TL (RM Org LIcense) - Capture (max length=80)
+
+Record #123:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001882-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #124:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000001923-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #139:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000002129-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #140:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000002138-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #141:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000002153-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #142:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000002257-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #144:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000002422-UK Addresses with Multi Residency and Not Yet Built - Large DL- (RM Dom License) - Both Cap&amp;Vfy (max length=80)
+
+Record #145:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000002424-Volume for UK + MR + NYB - (RM Domain License) - Both Cap+Vfy - Billing (max length=80)
+
+Record #146:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000003321-UK Address, MultiRes and NYB - Small TL &lt;1.5 million - Both Cap+Vfy (max length=80)
+
+Record #147:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000003322-UK Address, MultiRes and NYB - Small TL &lt;1.5 million - Both Cap+Vfy - Billing (max length=80)
+
+Record #178:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000003659-UK Addresses with Multi Residency and Not Yet Built - Large DL- (RM Dom License) - Both Cap&amp;Vfy (max length=80)
+
+Record #179:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000003661-Volume for UK + MR + NYB - (RM Domain License) - Both Cap+Vfy - Billing (max length=80)
+
+Record #205:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000003813-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #228:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004077-UK Addresses with Multi Residency - Large TL (RM Org LIcense) - Capture (max length=80)
+
+Record #264:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004116-Implementation -greenID Individual verification – Admin panel + API, Web or Hosted (max length=80)
+
+Record #269:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004121-Australia: Dual match standard source and Gov ID (with additional source) (AML) (max length=80)
+
+Record #282:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004134-Australia: Single match standard sources (with additional sources) (AML) (max length=80)
+
+Record #308:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004313-Australia: Dual match standard source and Gov ID (with additional source) (AML) (max length=80)
+
+Record #309:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004260-Australia: Dual match standard source and Gov ID (with additional source) (non-AML) (max length=80)
+
+Record #310:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004273-Australia: Single match standard sources (with additional sources) (non-AML) (max length=80)
+
+Record #311:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004165-UK Address, MultiRes and NYB - Small DL &lt;500k - Both Cap+Vfy - Billing (max length=80)
+
+Record #312:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004239-Australia: Dual match standard source and Gov ID (with additional source) (non-AML) (max length=80)
+
+Record #313:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004252-Australia: Single match standard sources (with additional sources) (non-AML) (max length=80)
+
+Record #314:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004351-Australia: Dual match standard source and Gov ID (with additional source) (AML) (max length=80)
+
+Record #315:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004291-Australia: Dual match standard source and Gov ID (with additional source) (AML) (max length=80)
+
+Record #316:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004376-Australia: Dual match standard source and Gov ID (with additional source) (AML) (max length=80)
+
+Record #337:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004480-UK Addresses with Multi Residency and Not Yet Built - Large DL- (RM Dom License) - Both Cap&amp;Vfy (max length=80)
+
+Record #339:
+  Status: STRING_TOO_LONG | Field(s): Name | Message: Customer Order Line Name: data value too large: COL-0000004482-Volume for UK + MR + NYB - (RM Domain License) - Both Cap+Vfy - Billing (max length=80)
