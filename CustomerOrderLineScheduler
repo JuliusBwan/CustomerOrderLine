@@ -1,0 +1,30 @@
+/**
+ * Scheduler class responsible for triggering the CustomerOrderLineBatch every night.
+ *
+ * Purpose:
+ *  - Automatically launches the batch job on a fixed schedule.
+ *  - Ensures OrderItem → CustomerOrderLine__c data remains up to date.
+ *
+ * Behavior:
+ *  - Executes the batch once at the scheduled time.
+ *  - Uses a cron expression to define daily execution (e.g., 1:00 AM).
+ *
+ * How to Schedule (Execute Anonymous):
+ *  System.schedule(
+ *      'Nightly Customer Order Line Sync', 
+ *      '0 0 1 * * ?',   // Runs every night at 1:00 AM
+ *      new CustomerOrderLineScheduler()
+ *  );
+ */
+global class CustomerOrderLineScheduler implements Schedulable {
+    global void execute(SchedulableContext sc){
+        Database.executeBatch(new CustomerOrderLineBatch(), 200);
+    }
+}
+
+/*
+    
+String cron = '0 0 1 * * ?';  // 1:00 AM daily
+System.schedule('Nightly Customer Order Line Sync', cron, new CustomerOrderLineScheduler());
+
+*/
