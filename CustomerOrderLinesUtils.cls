@@ -1,25 +1,24 @@
+// ─── CustomerOrderLinesUtils ──────────────────────────────────────────────────
 /**
- * CustomerOrderLinesUtils
- * -----------------------
- * Small utility helpers for Customer Order Lines:
- * - prependDeletedTag(): adds "[DEL]" to a Name unless already present.
- * - formatColName(): builds a deterministic Name based on OrderItemNumber or Id and the Product name when available.
+ * Small, pure utility helpers — no DML, no SOQL, no side-effects.
+ * Easy to unit-test without any test data setup.
  *
- * Notes:
- * - Safe-guards are included for null/blank names and absent Product2 relationship.
+ *  prependDeletedTag() — adds "[DEL]" prefix unless already present.
+ *  formatColName()     — builds a deterministic COL name from the OrderItem.
  */
 public with sharing class CustomerOrderLinesUtils {
-    
-    public Static String prependDeletedTag(String originalName) {
-        if (originalName == null || String.isBlank(originalName)) { return '[DEL]'; }
-        if (originalName.startsWith('[DEL]')) { return originalName; }
 
+    public static String prependDeletedTag(String originalName) {
+        if (String.isBlank(originalName))        return '[DEL]';
+        if (originalName.startsWith('[DEL]'))     return originalName;
         return '[DEL] ' + originalName;
     }
 
-    public static String formatColName(OrderItem o){
-        String key = (o.OrderItemNumber != null) ? o.OrderItemNumber : String.valueOf(o.Id);
-        String prod = (o.Product2 != null && o.Product2.Name != null) ? '-' + o.Product2.Name : '';
+    public static String formatColName(OrderItem o) {
+        String key  = (o.OrderItemNumber != null) ? o.OrderItemNumber : String.valueOf(o.Id);
+        String prod = (o.Product2 != null && o.Product2.Name != null)
+                      ? '-' + o.Product2.Name
+                      : '';
         return 'COL-' + key + prod;
     }
 }
