@@ -1,0 +1,33 @@
+// ─── CustomerOrderLineSchedulerTest ──────────────────────────────────────────
+/**
+ * Tests for CustomerOrderLineScheduler.
+ *
+ * Schedulable classes must be tested via System.schedule() wrapped in
+ * Test.startTest() / Test.stopTest().
+ *
+ * We verify:
+ *  - The scheduler can be scheduled without exception.
+ *  - After stopTest() the scheduled job exists in CronTrigger.
+ */
+@isTest
+private class CustomerOrderLineSchedulerTest {
+
+    @isTest
+    static void scheduler_canBeScheduledAndExecutesWithoutException() {
+        String cron     = '0 0 1 * * ?'; // 1 AM daily
+        String jobName  = 'Test Nightly COL Sync';
+
+        Test.startTest();
+        String jobId = System.schedule(jobName, cron, new CustomerOrderLineScheduler());
+        Test.stopTest();
+
+        // Verify the job was registered
+        List<CronTrigger> jobs = [
+            SELECT Id, CronJobDetail.Name
+            FROM   CronTrigger
+            WHERE  Id = :jobId
+        ];
+        System.assertEquals(1, jobs.size(), 'Scheduled job should appear in CronTrigger');
+        System.assertEquals(jobName, jobs[0].CronJobDetail.Name, 'Job name should match');
+    }
+}
