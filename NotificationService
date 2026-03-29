@@ -1,0 +1,45 @@
+// ─── NotificationService ─────────────────────────────────────────────────────
+public class NotificationService {
+  
+    private final static String DEFAULT_RECIPIENT = 'julius.bwanika@gbg.com';
+    
+    public static void handleResults(String operationLabel, Integer attemptedCount, Database.SaveResult[] results) {
+
+        Integer successCount = 0;
+        Integer failureCount = 0;
+        List<String> failureLines = new List<String>();
+
+        for (Integer i = 0; i < results.size(); i++) {
+            Database.SaveResult sr = results[i];
+
+            if (sr.isSuccess()) {
+                successCount++;
+            } else {
+                failureCount++;
+                List<String> errorParts = new List<String>();
+
+                for (Database.Error e : sr.getErrors()) {
+                    errorParts.add('Status: ' + e.getStatusCode() + ' | Field(s): ' + String.join(e.getFields(), ', ') + ' | Message: '  + e.getMessage() ); }
+                // sr.getId() is null on failure, so index is the only stable reference
+                failureLines.add('Record #' + (i + 1) + ':\n  ' + String.join(errorParts, '\n  '));
+            }
+        }
+
+        // Nothing to report if there were no failures
+        if (failureCount == 0) { return; }
+
+        String subject = operationLabel + ' — ' + failureCount + ' failure(s)';
+        String body = 'Operation: ' + operationLabel  + '\n' + 'Attempted: ' + attemptedCount  + '\n' + 'Succeeded: ' + successCount + '\n' +
+            'Failed: ' + failureCount + '\n\n' + '=== Failure Detail ===\n' + String.join(failureLines, '\n\n');
+        
+        sendEmail(subject, body);
+    }
+
+    private static void sendEmail(String subject, String body) {
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        mail.setToAddresses(new List<String>{ DEFAULT_RECIPIENT });
+        mail.setSubject(subject);
+        mail.setPlainTextBody(body);
+        Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ mail });
+    }
+}
