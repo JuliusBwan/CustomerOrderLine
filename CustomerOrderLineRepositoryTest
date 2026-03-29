@@ -1,0 +1,149 @@
+// ─── CustomerOrderLineRepositoryTest ─────────────────────────────────────────
+/**
+ * Tests for CustomerOrderLineRepository.
+ *
+ * Covers:
+ *  - getByOrderItemIds()     : returns correct map, handles null/empty/cleaned Ids.
+ *  - getByOrderItemIdsList() : returns correct list.
+ *  - getOrphaned()           : returns COLs with no linked OrderItem, skips [DEL] ones.
+ */
+@isTest
+private class CustomerOrderLineRepositoryTest {
+
+    // ── TEST DATA ─────────────────────────────────────────────────────────────
+
+    @testSetup
+    static void setupData() {
+        Account acc = new Account(Name = 'Repo Test Account');
+        insert acc;
+
+        Id pbId = Test.getStandardPricebookId();
+
+        Order ord = new Order(
+            AccountId     = acc.Id,
+            Status        = 'Draft',
+            EffectiveDate = Date.today(),
+            Pricebook2Id  = pbId
+        );
+        insert ord;
+
+        Product2 prod = new Product2(Name = 'Repo Product', IsActive = true);
+        insert prod;
+
+        PricebookEntry pbe = new PricebookEntry(
+            Pricebook2Id = pbId,
+            Product2Id   = prod.Id,
+            UnitPrice    = 50,
+            IsActive     = true
+        );
+        insert pbe;
+
+        OrderItem oi = new OrderItem(
+            OrderId          = ord.Id,
+            PricebookEntryId = pbe.Id,
+            Quantity         = 1,
+            UnitPrice        = 50,
+            ServiceDate      = Date.today(),
+            EndDate          = Date.today().addMonths(6)
+        );
+        insert oi;
+
+        // Linked COL
+        CustomerOrderLine__c col = new CustomerOrderLine__c(
+            Name         = 'COL-TEST',
+            OrderItem__c = oi.Id
+        );
+        insert col;
+    }
+
+    // ── getByOrderItemIds ─────────────────────────────────────────────────────
+
+    @isTest
+    static void getByOrderItemIds_returnsCorrectMap() {
+        OrderItem oi = [SELECT Id FROM OrderItem LIMIT 1];
+
+        Map<Id, CustomerOrderLine__c> result =
+            CustomerOrderLineRepository.getByOrderItemIds(new Set<Id>{ oi.Id });
+
+        System.assertEquals(1, result.size(),         'Should find exactly one COL');
+        System.assert(result.containsKey(oi.Id),      'Map key should be the OrderItem Id');
+    }
+
+    @isTest
+    static void getByOrderItemIds_nullSet_returnsEmptyMap() {
+        Map<Id, CustomerOrderLine__c> result =
+            CustomerOrderLineRepository.getByOrderItemIds(null);
+        System.assertEquals(0, result.size(), 'Null input should return empty map');
+    }
+
+    @isTest
+    static void getByOrderItemIds_emptySet_returnsEmptyMap() {
+        Map<Id, CustomerOrderLine__c> result =
+            CustomerOrderLineRepository.getByOrderItemIds(new Set<Id>());
+        System.assertEquals(0, result.size(), 'Empty set should return empty map');
+    }
+
+    @isTest
+    static void getByOrderItemIds_nullIdsInSet_cleanedBeforeQuery() {
+        // Mix of a real Id and a null — should still find the real one
+        OrderItem oi = [SELECT Id FROM OrderItem LIMIT 1];
+        Set<Id> mixed = new Set<Id>{ oi.Id, null };
+
+        Map<Id, CustomerOrderLine__c> result =
+            CustomerOrderLineRepository.getByOrderItemIds(mixed);
+
+        System.assertEquals(1, result.size(), 'Null Id in set should be silently removed');
+    }
+
+    // ── getByOrderItemIdsList ─────────────────────────────────────────────────
+
+    @isTest
+    static void getByOrderItemIdsList_returnsList() {
+        OrderItem oi = [SELECT Id FROM OrderItem LIMIT 1];
+
+        List<CustomerOrderLine__c> result =
+            CustomerOrderLineRepository.getByOrderItemIdsList(new Set<Id>{ oi.Id });
+
+        System.assertEquals(1, result.size(), 'Should return one COL as a list');
+    }
+
+    @isTest
+    static void getByOrderItemIdsList_emptySet_returnsEmptyList() {
+        List<CustomerOrderLine__c> result =
+            CustomerOrderLineRepository.getByOrderItemIdsList(new Set<Id>());
+        System.assertEquals(0, result.size(), 'Empty set should return empty list');
+    }
+
+    // ── getOrphaned ───────────────────────────────────────────────────────────
+
+    @isTest
+    static void getOrphaned_returnsUntaggedCOLsWithNoOrderItem() {
+        // Insert a COL with no OrderItem__c (orphan)
+        CustomerOrderLine__c orphan = new CustomerOrderLine__c(Name = 'COL-ORPHAN');
+        insert orphan;
+
+        List<CustomerOrderLine__c> result = CustomerOrderLineRepository.getOrphaned();
+
+        // Should include our orphan
+        Boolean found = false;
+        for (CustomerOrderLine__c c : result) {
+            if (c.Id == orphan.Id) { found = true; break; }
+        }
+        System.assert(found, 'Orphan COL without [DEL] tag should be returned');
+    }
+
+    @isTest
+    static void getOrphaned_excludesAlreadyTaggedCOLs() {
+        // Insert a COL that is orphaned but already tagged
+        CustomerOrderLine__c tagged = new CustomerOrderLine__c(Name = '[DEL] COL-OLD');
+        insert tagged;
+
+        List<CustomerOrderLine__c> result = CustomerOrderLineRepository.getOrphaned();
+
+        Boolean found = false;
+        for (CustomerOrderLine__c c : result) {
+            if (c.Id == tagged.Id) { found = true; break; }
+        }
+        System.assert(!found, 'Already-tagged orphan should be excluded from getOrphaned()');
+    }
+}
