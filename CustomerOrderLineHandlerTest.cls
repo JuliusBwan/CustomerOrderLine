@@ -1,59 +1,194 @@
+// ─── CustomerOrderLineHandlerTest ────────────────────────────────────────────
 /**
- * CustomerOrderLineHandlerTest
- * ----------------------------
- * PURPOSE: Tests the invocable entry point. Verifies that calling process()
- * with a create request results in a COL being created, and that passing null
- * does not cause an exception.
+ * Tests for CustomerOrderLineHandler.
  *
- * CHANGES FROM ORIGINAL:
+ * IMPORTANT — why we can't call CustomerOrderLineHandler.run() directly:
+ * -----------------------------------------------------------------------
+ * run() reads Trigger.operationType, which is only populated inside a real
+ * trigger context. Calling run() from a test class outside of a trigger would
+ * throw a NullPointerException on that line.
  *
- * 1. testInvocableProcess_nullRequests_noThrow — removed vacuous assertion
- *    =======================================================================
- *    The original ended with:
- *        Assert.areEqual(true, 'No exception expected when passing null...');
+ * The correct approach: perform real DML on OrderItem (insert / update / delete)
+ * and let the trigger fire naturally. We then assert on the COL records that
+ * result from that DML.
  *
- *    Assert.areEqual() with two arguments (expected, actual) compares them for
- *    equality. Here it was comparing the Boolean true against the String 'No
- *    exception expected...' — these are never equal, so the assertion always
- *    passed and was testing nothing at all.
+ * Async note:
+ * -----------
+ * AFTER_INSERT and AFTER_UPDATE dispatch to @future methods inside the service.
+ * @future methods only execute after Test.stopTest(), so all COL assertions for
+ * those paths are placed after that call.
  *
- *    The real intent of the test is just: "calling this method with null should
- *    not throw an exception". In Apex, if the method throws, the test fails
- *    automatically. So no assertion is needed at all — the absence of an
- *    exception IS the test passing. The bogus assertion has been removed and
- *    replaced with a comment explaining this.
+ * AFTER_DELETE is synchronous — assertions can be made immediately after
+ * Test.stopTest() as well, but for consistency they follow the same pattern.
+ *
+ * This test class uses CustomerOrderLineTestDataFactory to avoid repeating
+ * the Account → Product → Pricebook → Order → OrderItem setup in every method.
  */
-@IsTest
+@isTest
 private class CustomerOrderLineHandlerTest {
 
-    @IsTest
-    static void testInvocableProcess_createsCOL() {
-        CustomerOrderLineTestDataFactory.OrderBundle b = CustomerOrderLineTestDataFactory.createOrderWithItem();
+    // ── AFTER INSERT — trigger creates a COL ─────────────────────────────────
 
-        CustomerOrderLineHandler.RequestWrapper req = new CustomerOrderLineHandler.RequestWrapper();
-        req.operationType = 'create';
-        req.newRecord     = b.orderItem;
+    @isTest
+    static void afterInsert_createsOneCOLPerOrderItem() {
+        CustomerOrderLineTestDataFactory.OrderBundle b =
+            CustomerOrderLineTestDataFactory.createOrderWithItem();
 
+        // The insert already happened inside the factory (trigger has fired).
+        // Drive the @future to completion.
         Test.startTest();
-        CustomerOrderLineHandler.process(new List<CustomerOrderLineHandler.RequestWrapper>{ req });
         Test.stopTest();
 
-        CustomerOrderLine__c col = [
-            SELECT Id, Name, OrderItem__c
-            FROM CustomerOrderLine__c
-            WHERE OrderItem__c = :b.orderItem.Id
-            LIMIT 1
+        List<CustomerOrderLine__c> cols = [
+            SELECT Id, OrderItem__c, Name
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = :b.orderItem.Id
         ];
-        Assert.areNotEqual(null, col,                       'COL should be created by invocable entry point');
-        Assert.isTrue(col.Name.startsWith('COL-'),          'Name should be formatted via utils');
+
+        Assert.areEqual(1, cols.size(),
+            'Exactly one COL should be created after an OrderItem insert');
+        Assert.isTrue(cols[0].Name.startsWith('COL-'),
+            'COL Name should be formatted with COL- prefix');
     }
 
-    @IsTest
-    static void testInvocableProcess_nullRequests_noThrow() {
+    @isTest
+    static void afterInsert_idempotent_doesNotCreateDuplicateCOL() {
+        // Pre-create a COL so the trigger's idempotency check is exercised
+        CustomerOrderLineTestDataFactory.OrderBundle b =
+            CustomerOrderLineTestDataFactory.createOrderWithItem();
+
+        // Manually insert a COL before the future runs — simulates a race condition
+        // or a record already created by an earlier batch run
+        CustomerOrderLineTestDataFactory.createColLinkedTo(b.orderItem, null);
+
         Test.startTest();
-        // If process(null) throws any exception, this test will automatically fail.
-        // No assertion needed — reaching this comment without crashing is the test passing.
-        CustomerOrderLineHandler.process(null);
         Test.stopTest();
+
+        Integer count = [
+            SELECT COUNT()
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = :b.orderItem.Id
+        ];
+
+        Assert.areEqual(1, count,
+            'A second COL should NOT be created when one already exists');
+    }
+
+    // ── AFTER UPDATE — trigger updates the existing COL ──────────────────────
+
+    @isTest
+    static void afterUpdate_updatesQuantityOnCOL() {
+        CustomerOrderLineTestDataFactory.OrderBundle b =
+            CustomerOrderLineTestDataFactory.createOrderWithItem();
+
+        // Let the insert future settle so the COL exists before we update
+        Test.startTest();
+        Test.stopTest();
+
+        // Now update the OrderItem quantity — fires the AFTER_UPDATE trigger path
+        Test.startTest();
+        b.orderItem.Quantity = 99;
+        update b.orderItem;
+        Test.stopTest(); // flush the update @future
+
+        CustomerOrderLine__c col = [
+            SELECT Quantity__c
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = :b.orderItem.Id
+            LIMIT  1
+        ];
+
+        Assert.areEqual(99, col.Quantity__c,
+            'COL Quantity__c should reflect the updated OrderItem Quantity');
+    }
+
+    @isTest
+    static void afterUpdate_noChange_doesNotAlterLastSyncedDate() {
+        CustomerOrderLineTestDataFactory.OrderBundle b =
+            CustomerOrderLineTestDataFactory.createOrderWithItem();
+
+        Test.startTest();
+        Test.stopTest(); // settle insert future — COL now exists
+
+        // Read the timestamp written by the insert
+        DateTime syncedAfterInsert = [
+            SELECT Last_Synced_Date__c
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = :b.orderItem.Id
+            LIMIT  1
+        ].Last_Synced_Date__c;
+
+        // Update with identical values — applyChanges() should return false
+        Test.startTest();
+        update b.orderItem; // no field actually changed
+        Test.stopTest();
+
+        DateTime syncedAfterUpdate = [
+            SELECT Last_Synced_Date__c
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = :b.orderItem.Id
+            LIMIT  1
+        ].Last_Synced_Date__c;
+
+        Assert.areEqual(syncedAfterInsert, syncedAfterUpdate,
+            'Last_Synced_Date__c should not change when no field values changed');
+    }
+
+    // ── AFTER DELETE — trigger tags COL as [DEL] ─────────────────────────────
+
+    @isTest
+    static void afterDelete_tagsCOLWithDelPrefix() {
+        CustomerOrderLineTestDataFactory.OrderBundle b =
+            CustomerOrderLineTestDataFactory.createOrderWithItem();
+
+        // Ensure the COL exists before we delete the OrderItem
+        Test.startTest();
+        Test.stopTest();
+
+        Id oiId  = b.orderItem.Id;
+        Id colId = [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oiId LIMIT 1].Id;
+
+        // Delete fires the synchronous AFTER_DELETE path
+        Test.startTest();
+        delete b.orderItem;
+        Test.stopTest();
+
+        CustomerOrderLine__c tagged = [
+            SELECT Name, Last_Synced_Date__c
+            FROM   CustomerOrderLine__c
+            WHERE  Id = :colId
+        ];
+
+        Assert.isTrue(tagged.Name.startsWith('[DEL]'),
+            'COL Name should be prefixed with [DEL] after the OrderItem is deleted');
+        Assert.isNotNull(tagged.Last_Synced_Date__c,
+            'Last_Synced_Date__c should be stamped when the delete is processed');
+    }
+
+    @isTest
+    static void afterDelete_alreadyTaggedCOL_noDoubleTag() {
+        CustomerOrderLineTestDataFactory.OrderBundle b =
+            CustomerOrderLineTestDataFactory.createOrderWithItem();
+
+        Test.startTest();
+        Test.stopTest(); // settle insert
+
+        // Manually pre-tag the COL to simulate it being tagged already
+        CustomerOrderLine__c col = [
+            SELECT Id, Name FROM CustomerOrderLine__c WHERE OrderItem__c = :b.orderItem.Id LIMIT 1
+        ];
+        col.Name = '[DEL] ' + col.Name;
+        update col;
+
+        Test.startTest();
+        delete b.orderItem;
+        Test.stopTest();
+
+        CustomerOrderLine__c checked = [
+            SELECT Name FROM CustomerOrderLine__c WHERE Id = :col.Id
+        ];
+
+        Assert.isFalse(checked.Name.startsWith('[DEL] [DEL]'),
+            'An already-tagged COL should not receive a second [DEL] prefix');
     }
 }
