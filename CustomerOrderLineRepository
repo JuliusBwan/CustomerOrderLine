@@ -1,24 +1,73 @@
 // ─── CustomerOrderLineRepository ─────────────────────────────────────────────
+/**
+ * All SOQL against CustomerOrderLine__c lives here.
+ * Keeping queries in one place means:
+ *  - One field list to maintain.
+ *  - Service and batch classes stay readable.
+ *  - Tests can stub / verify query behaviour independently.
+ *
+ * without sharing — COLs are an internal sync object; sharing rules
+ * should not prevent the trigger/batch from reading its own records.
+ */
 public without sharing class CustomerOrderLineRepository {
 
+    // Shared field list so both query methods stay in sync with one another.
+    private static final String BASE_FIELDS =
+        'Id, Name, OrderItem__c, Last_Synced_Date__c, ' +
+        'blng_LastChargeToDate__c, blng_NextBillingDate__c, ' +
+        'Contract_Status__c, End_Date__c, OrderItemNumber__c, ' +
+        'Product_Name__c, Quantity__c, Service_Date__c, ' +
+        'Subscription_Term_Months__c, Total_Price__c';
+
+    /**
+     * Returns a Map<OrderItemId, COL> for easy lookup by the service layer.
+     * Null Ids are silently removed before querying.
+     */
     public static Map<Id, CustomerOrderLine__c> getByOrderItemIds(Set<Id> ids) {
-        
         Map<Id, CustomerOrderLine__c> result = new Map<Id, CustomerOrderLine__c>();
-
-        if (ids == null || ids.isEmpty()) return result;
-
-        //remove null ids
-        Set<Id> cleaned = new Set<Id>();
-        for (Id i : ids) if (i != null) cleaned.add(i);
+        Set<Id> cleaned = cleanIds(ids);
         if (cleaned.isEmpty()) return result;
 
-        for (CustomerOrderLine__c col : [SELECT Id, Name, blng_LastChargeToDate__c,blng_NextBillingDate__c, Contract_Status__c,  
-                                         Product_Name__c, End_Date__c, OrderItemNumber__c, Quantity__c, Service_Date__c,
-                                         Subscription_Term_Months__c, Total_Price__c, OrderItem__c, Last_Synced_Date__c
-                                         FROM CustomerOrderLine__c 
-                                         WHERE OrderItem__c IN :cleaned]){
+        for (CustomerOrderLine__c col : Database.query(
+            'SELECT ' + BASE_FIELDS + ' FROM CustomerOrderLine__c WHERE OrderItem__c IN :cleaned'
+        )) {
             result.put(col.OrderItem__c, col);
         }
         return result;
+    }
+
+    /**
+     * Returns a plain List — used by handleUpdateToDeleted where a Map is not needed.
+     * Keeps the delete path simple: iterate, tag, done.
+     */
+    public static List<CustomerOrderLine__c> getByOrderItemIdsList(Set<Id> ids) {
+        Set<Id> cleaned = cleanIds(ids);
+        if (cleaned.isEmpty()) return new List<CustomerOrderLine__c>();
+
+        return Database.query(
+            'SELECT ' + BASE_FIELDS + ' FROM CustomerOrderLine__c WHERE OrderItem__c IN :cleaned'
+        );
+    }
+
+    /**
+     * Returns COLs whose linked OrderItem no longer exists.
+     * Used by the nightly batch to clean up orphaned records.
+     */
+    public static List<CustomerOrderLine__c> getOrphaned() {
+        return [
+            SELECT Id, Name, Last_Synced_Date__c
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = null
+               AND NOT Name LIKE '[DEL]%'
+        ];
+    }
+
+    // ── PRIVATE HELPERS ──────────────────────────────────────────────────────
+
+    private static Set<Id> cleanIds(Set<Id> raw) {
+        Set<Id> cleaned = new Set<Id>();
+        if (raw == null) return cleaned;
+        for (Id i : raw) { if (i != null) cleaned.add(i); }
+        return cleaned;
     }
 }
