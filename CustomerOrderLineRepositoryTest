@@ -14,46 +14,9 @@ private class CustomerOrderLineRepositoryTest {
 
     @testSetup
     static void setupData() {
-        Account acc = new Account(Name = 'Repo Test Account');
-        insert acc;
-
-        Id pbId = Test.getStandardPricebookId();
-
-        Order ord = new Order(
-            AccountId     = acc.Id,
-            Status        = 'Draft',
-            EffectiveDate = Date.today(),
-            Pricebook2Id  = pbId
-        );
-        insert ord;
-
-        Product2 prod = new Product2(Name = 'Repo Product', IsActive = true);
-        insert prod;
-
-        PricebookEntry pbe = new PricebookEntry(
-            Pricebook2Id = pbId,
-            Product2Id   = prod.Id,
-            UnitPrice    = 50,
-            IsActive     = true
-        );
-        insert pbe;
-
-        OrderItem oi = new OrderItem(
-            OrderId          = ord.Id,
-            PricebookEntryId = pbe.Id,
-            Quantity         = 1,
-            UnitPrice        = 50,
-            ServiceDate      = Date.today(),
-            EndDate          = Date.today().addMonths(6)
-        );
-        insert oi;
-
-        // Linked COL
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Name         = 'COL-TEST',
-            OrderItem__c = oi.Id
-        );
-        insert col;
+        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
+        // Create a linked COL for the OrderItem
+        CPQ_TestDataFactory.createCOL(b.orderItem, 'COL-TEST');
     }
 
     // ── getByOrderItemIds ─────────────────────────────────────────────────────
@@ -85,7 +48,6 @@ private class CustomerOrderLineRepositoryTest {
 
     @isTest
     static void getByOrderItemIds_nullIdsInSet_cleanedBeforeQuery() {
-        // Mix of a real Id and a null — should still find the real one
         OrderItem oi = [SELECT Id FROM OrderItem LIMIT 1];
         Set<Id> mixed = new Set<Id>{ oi.Id, null };
 
@@ -118,13 +80,10 @@ private class CustomerOrderLineRepositoryTest {
 
     @isTest
     static void getOrphaned_returnsUntaggedCOLsWithNoOrderItem() {
-        // Insert a COL with no OrderItem__c (orphan)
-        CustomerOrderLine__c orphan = new CustomerOrderLine__c(Name = 'COL-ORPHAN');
-        insert orphan;
+        CustomerOrderLine__c orphan = CPQ_TestDataFactory.createOrphanCOL('COL-ORPHAN');
 
         List<CustomerOrderLine__c> result = CustomerOrderLineRepository.getOrphaned();
 
-        // Should include our orphan
         Boolean found = false;
         for (CustomerOrderLine__c c : result) {
             if (c.Id == orphan.Id) { found = true; break; }
@@ -134,9 +93,7 @@ private class CustomerOrderLineRepositoryTest {
 
     @isTest
     static void getOrphaned_excludesAlreadyTaggedCOLs() {
-        // Insert a COL that is orphaned but already tagged
-        CustomerOrderLine__c tagged = new CustomerOrderLine__c(Name = '[DEL] COL-OLD');
-        insert tagged;
+        CustomerOrderLine__c tagged = CPQ_TestDataFactory.createOrphanCOL('[DEL] COL-OLD');
 
         List<CustomerOrderLine__c> result = CustomerOrderLineRepository.getOrphaned();
 
