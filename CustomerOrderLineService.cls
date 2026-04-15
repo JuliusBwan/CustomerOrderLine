@@ -1,12 +1,96 @@
 // ─── CustomerOrderLineService ────────────────────────────────────────────────
-public class CustomerOrderLineService {
+/**
+ * Single service class for Customer Order Line (COL) sync.
+ *
+ * Merges the handler, service, and repository into one class.
+ * The trigger calls run() and everything else is handled internally.
+ *
+ * METHOD SUMMARY
+ * ──────────────
+ * run(op, newMap, oldMap, oldList)
+ *     → Entry point called by the OrderItem trigger. Routes each operation
+ *       (insert, update, delete) to the correct internal handler.
+ *
+ * buildCOL(orderItem)
+ *     → Maps every relevant OrderItem field onto a new COL record. Public
+ *       so the nightly batch can call it without duplicating logic.
+ *
+ * getOrphanedCols()
+ *     → Returns COLs with no linked OrderItem that haven't been tagged
+ *       [DEL] yet. Public so the nightly batch can call it.
+ *
+ * ── Internal (private) ──
+ *
+ * applyChanges(col, oldOI, newOI)
+ *     → Diffs old vs new OrderItem onto an existing COL. Returns true when
+ *       at least one field changed so callers know whether to update.
+ *
+ * buildPseudoOld(col)
+ *     → Reconstructs a fake "before" OrderItem from the COL's stored values.
+ *       Needed in async because old trigger values are gone after commit.
+ *
+ * createCOLsAsync(ids)
+ *     → @future — re-queries OrderItems and inserts new COLs. Skips any
+ *       OrderItem that already has a COL (idempotent safety net).
+ *
+ * updateCOLsAsync(ids)
+ *     → @future — re-queries OrderItems, diffs them against the COL's stored
+ *       values, and updates only the fields that changed.
+ *
+ * handleDeletedOrderItems(deletedList)
+ *     → Synchronous — tags COLs with [DEL] prefix. Must be sync because
+ *       OrderItem Ids become unqueryable after the transaction commits.
+ *
+ * queryOrderItems(ids)
+ *     → Shared SOQL query used by both async methods so the field list is
+ *       maintained in one place.
+ *
+ * getColsByOrderItemIds(ids)
+ *     → Returns a Map keyed by OrderItem Id for quick lookup. Null Ids
+ *       are silently removed before querying.
+ *
+ * without sharing — COLs are an internal sync object; sharing rules should
+ * not prevent the trigger or batch from reading its own records.
+ */
+public without sharing class CustomerOrderLineService {
 
-    // ── BUILD / DIFF HELPERS ─────────────────────────────────────────────────
+    // ── COL QUERY FIELD LIST ─────────────────────────────────────────────
+    // One field list so every query stays in sync automatically.
+    private static final String COL_BASE_FIELDS =
+        'Id, Name, OrderItem__c, Last_Synced_Date__c, ' +
+        'blng_LastChargeToDate__c, blng_NextBillingDate__c, ' +
+        'Contract_Number__c, Contract_Status__c, End_Date__c, ' +
+        'OrderItemNumber__c, Product_Name__c, Quantity__c, ' +
+        'Service_Date__c, Subscription_Term_Months__c, Total_Price__c';
+
+    // ── TRIGGER ENTRY POINT ──────────────────────────────────────────────
 
     /**
-     * buildCOL — maps every relevant OrderItem field onto a new COL record.
-     * Used by both the trigger path (async future) and the nightly batch.
-     * Public so CustomerOrderLineBatch can call it without duplicating logic.
+     * Called by the OrderItem trigger. Routes each operation to the
+     * correct handler. Accepts the operation type as a parameter so
+     * the method is testable without a real trigger context.
+     */
+    public static void run(
+        System.TriggerOperation op,
+        Map<Id, OrderItem> newMap,
+        Map<Id, OrderItem> oldMap,
+        List<OrderItem>    oldList
+    ) {
+        switch on op {
+            when AFTER_INSERT { createCOLsAsync(newMap.keySet()); }
+            when AFTER_UPDATE { updateCOLsAsync(newMap.keySet()); }
+            when AFTER_DELETE { handleDeletedOrderItems(oldList); }
+            when else {
+                System.debug('CustomerOrderLineService: unhandled operation — ' + op);
+            }
+        }
+    }
+
+    // ── BUILD / DIFF HELPERS ─────────────────────────────────────────────
+
+    /**
+     * Maps every relevant OrderItem field onto a new COL record.
+     * Public so the nightly batch can reuse it.
      */
     public static CustomerOrderLine__c buildCOL(OrderItem o) {
         CustomerOrderLine__c col = new CustomerOrderLine__c();
@@ -29,12 +113,13 @@ public class CustomerOrderLineService {
     }
 
     /**
-     * applyChanges — diffs old vs new OrderItem onto an existing COL.
-     * Returns true when at least one field changed so callers know whether to update.
-     * @TestVisible keeps it private but lets test classes call it directly.
+     * Diffs old vs new OrderItem onto an existing COL.
+     * Returns true when at least one field actually changed.
      */
     @TestVisible
-    private static Boolean applyChanges(CustomerOrderLine__c col, OrderItem oldOI, OrderItem newOI) {
+    private static Boolean applyChanges(
+        CustomerOrderLine__c col, OrderItem oldOI, OrderItem newOI
+    ) {
         Boolean changed = false;
 
         if (oldOI.blng__LastChargeToDate__c != newOI.blng__LastChargeToDate__c) {
@@ -52,7 +137,9 @@ public class CustomerOrderLineService {
 
         String oldStatus = oldOI.SBQQ__Contract__r?.Status;
         String newStatus = newOI.SBQQ__Contract__r?.Status;
-        if (oldStatus != newStatus) { col.Contract_Status__c = newStatus; changed = true; }
+        if (oldStatus != newStatus) {
+            col.Contract_Status__c = newStatus; changed = true;
+        }
 
         if (oldOI.EndDate != newOI.EndDate) {
             col.End_Date__c = newOI.EndDate; changed = true;
@@ -63,7 +150,9 @@ public class CustomerOrderLineService {
 
         String oldProd = oldOI.Product2?.Name;
         String newProd = newOI.Product2?.Name;
-        if (oldProd != newProd) { col.Product_Name__c = newProd; changed = true; }
+        if (oldProd != newProd) {
+            col.Product_Name__c = newProd; changed = true;
+        }
 
         if (oldOI.Quantity != newOI.Quantity) {
             col.Quantity__c = newOI.Quantity; changed = true;
@@ -81,118 +170,9 @@ public class CustomerOrderLineService {
         return changed;
     }
 
-    // ── AFTER INSERT ─────────────────────────────────────────────────────────
-
     /**
-     * Called from the trigger. Immediately offloads to an async future method
-     * so the original OrderItem save is not delayed.
-     */
-    public static void handleCreates(Set<Id> newOIIds) {
-        createCOLsAsync(newOIIds);
-    }
-
-    /**
-     * @future — runs after the transaction commits, in its own async context.
-     * Re-queries OrderItems (futures cannot receive SObjects) then inserts COLs.
-     * Skips any OrderItem that already has a COL (idempotent safety net).
-     */
-    @future
-    private static void createCOLsAsync(Set<Id> orderItemIds) {
-        List<OrderItem> items = [
-            SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c,
-                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
-                   Quantity, TotalPrice, ServiceDate, EndDate,
-                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
-                   SBQQ__DefaultSubscriptionTerm__c
-            FROM   OrderItem
-            WHERE  Id IN :orderItemIds
-        ];
-
-        Map<Id, CustomerOrderLine__c> existing =
-            CustomerOrderLineRepository.getByOrderItemIds(orderItemIds);
-
-        List<CustomerOrderLine__c> toInsert = new List<CustomerOrderLine__c>();
-        for (OrderItem o : items) {
-            if (!existing.containsKey(o.Id)) {
-                toInsert.add(buildCOL(o));
-            }
-        }
-
-        if (toInsert.isEmpty()) return;
-
-        Database.SaveResult[] results = Database.insert(toInsert, false);
-        NotificationService.handleResults(
-            'Customer Order Lines - Create Summary', toInsert.size(), results
-        );
-    }
-
-    // ── AFTER UPDATE ─────────────────────────────────────────────────────────
-
-    /**
-     * Called from the trigger. Serialises old/new IDs and offloads to async.
-     */
-    public static void handleUpdates(Map<Id, OrderItem> newOIMap, Map<Id, OrderItem> oldOIMap) {
-        List<Id> newIds = new List<Id>();
-        List<Id> oldIds = new List<Id>();
-
-        for (Id id : newOIMap.keySet()) {
-            newIds.add(id);
-            oldIds.add(id);
-        }
-        updateCOLsAsync(newIds, oldIds);
-    }
-
-    /**
-     * @future — re-queries current state then diffs against COL stored values.
-     */
-    @future
-    private static void updateCOLsAsync(List<Id> orderItemIds, List<Id> ignored) {
-        Map<Id, OrderItem> freshItems = new Map<Id, OrderItem>([
-            SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c,
-                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
-                   Quantity, TotalPrice, ServiceDate, EndDate,
-                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
-                   SBQQ__DefaultSubscriptionTerm__c
-            FROM   OrderItem
-            WHERE  Id IN :orderItemIds
-        ]);
-
-        Set<Id> idSet = new Set<Id>(orderItemIds);
-        Map<Id, CustomerOrderLine__c> existingByOI =
-            CustomerOrderLineRepository.getByOrderItemIds(idSet);
-
-        List<CustomerOrderLine__c> toUpdate = new List<CustomerOrderLine__c>();
-
-        for (Id oiId : orderItemIds) {
-            if (!existingByOI.containsKey(oiId)) continue;
-            if (!freshItems.containsKey(oiId))   continue;
-
-            CustomerOrderLine__c col   = existingByOI.get(oiId);
-            OrderItem            newOI = freshItems.get(oiId);
-
-            OrderItem pseudoOld = buildPseudoOld(col);
-
-            Boolean changed = applyChanges(col, pseudoOld, newOI);
-            if (changed) {
-                col.Last_Synced_Date__c = System.now();
-                toUpdate.add(col);
-            }
-        }
-
-        if (toUpdate.isEmpty()) return;
-
-        Database.SaveResult[] results = Database.update(toUpdate, false);
-        NotificationService.handleResults(
-            'Customer Order Lines - Update Summary', toUpdate.size(), results
-        );
-    }
-
-    /**
-     * Reconstructs a "before" OrderItem from the COL's stored field values.
-     * This is needed in the async path because old trigger values are gone
-     * by the time the future method runs.
+     * Reconstructs a fake "before" OrderItem from the COL's stored values.
+     * Needed because old trigger values are gone by the time the @future runs.
      */
     @TestVisible
     private static OrderItem buildPseudoOld(CustomerOrderLine__c col) {
@@ -213,21 +193,85 @@ public class CustomerOrderLineService {
         return pseudo;
     }
 
-    // ── AFTER DELETE ─────────────────────────────────────────────────────────
+    // ── AFTER INSERT (async) ─────────────────────────────────────────────
 
     /**
-     * Delete MUST stay synchronous — OrderItem Ids are no longer queryable
-     * after the transaction commits, so we act before the commit window closes.
+     * Re-queries OrderItems, builds COLs, and inserts them.
+     * Skips any OrderItem that already has a COL (idempotent).
      */
-    public static void handleUpdateToDeleted(List<OrderItem> deletedOIList) {
-        Set<Id> idSet = new Set<Id>();
-        for (OrderItem oi : deletedOIList) { idSet.add(oi.Id); }
+    @future
+    private static void createCOLsAsync(Set<Id> orderItemIds) {
+        List<OrderItem> items = queryOrderItems(orderItemIds);
 
-        List<CustomerOrderLine__c> cols =
-            CustomerOrderLineRepository.getByOrderItemIdsList(idSet);
+        Map<Id, CustomerOrderLine__c> existing = getColsByOrderItemIds(orderItemIds);
+
+        List<CustomerOrderLine__c> toInsert = new List<CustomerOrderLine__c>();
+        for (OrderItem o : items) {
+            if (!existing.containsKey(o.Id)) {
+                toInsert.add(buildCOL(o));
+            }
+        }
+
+        if (toInsert.isEmpty()) return;
+
+        Database.SaveResult[] results = Database.insert(toInsert, false);
+        NotificationService.handleResults(
+            'Customer Order Lines - Create Summary', toInsert.size(), results
+        );
+    }
+
+    // ── AFTER UPDATE (async) ─────────────────────────────────────────────
+
+    /**
+     * Re-queries current OrderItem values, diffs them against COL stored
+     * values (the "pseudo-old"), and updates only the COLs that changed.
+     */
+    @future
+    private static void updateCOLsAsync(Set<Id> orderItemIds) {
+        Map<Id, OrderItem> freshItems = new Map<Id, OrderItem>(
+            queryOrderItems(orderItemIds)
+        );
+
+        Map<Id, CustomerOrderLine__c> existingByOI = getColsByOrderItemIds(orderItemIds);
 
         List<CustomerOrderLine__c> toUpdate = new List<CustomerOrderLine__c>();
-        for (CustomerOrderLine__c col : cols) {
+
+        for (Id oiId : orderItemIds) {
+            if (!existingByOI.containsKey(oiId)) continue;
+            if (!freshItems.containsKey(oiId))   continue;
+
+            CustomerOrderLine__c col   = existingByOI.get(oiId);
+            OrderItem            newOI = freshItems.get(oiId);
+
+            OrderItem pseudoOld = buildPseudoOld(col);
+
+            if (applyChanges(col, pseudoOld, newOI)) {
+                col.Last_Synced_Date__c = System.now();
+                toUpdate.add(col);
+            }
+        }
+
+        if (toUpdate.isEmpty()) return;
+
+        Database.SaveResult[] results = Database.update(toUpdate, false);
+        NotificationService.handleResults(
+            'Customer Order Lines - Update Summary', toUpdate.size(), results
+        );
+    }
+
+    // ── AFTER DELETE (sync) ──────────────────────────────────────────────
+
+    /**
+     * Tags COLs with [DEL] prefix. Must stay synchronous because OrderItem
+     * Ids become unqueryable after the transaction commits.
+     */
+    private static void handleDeletedOrderItems(List<OrderItem> deletedOIList) {
+        Set<Id> idSet = AppUtils.pluckIds(deletedOIList, 'Id');
+
+        Map<Id, CustomerOrderLine__c> colMap = getColsByOrderItemIds(idSet);
+
+        List<CustomerOrderLine__c> toUpdate = new List<CustomerOrderLine__c>();
+        for (CustomerOrderLine__c col : colMap.values()) {
             col.Name                = AppUtils.prependDeletedTag(col.Name);
             col.Last_Synced_Date__c = System.now();
             toUpdate.add(col);
@@ -239,5 +283,56 @@ public class CustomerOrderLineService {
         NotificationService.handleResults(
             'Customer Order Lines - Delete Summary', toUpdate.size(), results
         );
+    }
+
+    // ── PRIVATE QUERIES ──────────────────────────────────────────────────
+
+    /**
+     * Shared OrderItem query used by both async methods so the field list
+     * is maintained in one place.
+     */
+    @TestVisible
+    private static List<OrderItem> queryOrderItems(Set<Id> orderItemIds) {
+        return [
+            SELECT Id, OrderItemNumber, Product2.Name,
+                   Order.AccountId, SBQQ__Contract__c,
+                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
+                   Quantity, TotalPrice, ServiceDate, EndDate,
+                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
+                   SBQQ__DefaultSubscriptionTerm__c
+            FROM   OrderItem
+            WHERE  Id IN :orderItemIds
+        ];
+    }
+
+    /**
+     * Returns a Map keyed by OrderItem Id for quick COL lookup.
+     * Null Ids are silently removed before querying.
+     */
+    @TestVisible
+    private static Map<Id, CustomerOrderLine__c> getColsByOrderItemIds(Set<Id> ids) {
+        Map<Id, CustomerOrderLine__c> result = new Map<Id, CustomerOrderLine__c>();
+        Set<Id> cleaned = AppUtils.cleanIdSet(ids);
+        if (cleaned.isEmpty()) return result;
+        for (CustomerOrderLine__c col : Database.query(
+            'SELECT ' + COL_BASE_FIELDS +
+            ' FROM CustomerOrderLine__c WHERE OrderItem__c IN :cleaned'
+        )) {
+            result.put(col.OrderItem__c, col);
+        }
+        return result;
+    }
+
+    /**
+     * Returns COLs whose linked OrderItem no longer exists and that
+     * haven't already been tagged [DEL]. Used by the nightly batch.
+     */
+    public static List<CustomerOrderLine__c> getOrphanedCols() {
+        return [
+            SELECT Id, Name, Last_Synced_Date__c
+            FROM   CustomerOrderLine__c
+            WHERE  OrderItem__c = null
+               AND NOT Name LIKE '[DEL]%'
+        ];
     }
 }
