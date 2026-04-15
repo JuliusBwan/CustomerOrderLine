@@ -178,22 +178,28 @@ public class CPQ_TestDataFactory {
             AccountId = b.account.Id,
             EffectiveDate = Date.today(),
             Status = 'Draft',
-            Pricebook2Id = Test.getStandardPricebookId()
+            Pricebook2Id = Test.getStandardPricebookId(),
+        
+            // 🔥 REQUIRED BY YOUR VALIDATION RULE
+            Billing_Day_of_Month__c = '1'   // string field per your note
         );
         insert b.orderRec;
 
-        // ✅ CLEAN ORDER ITEM (NO CPQ FIELDS HERE)
         OrderItem oi = new OrderItem(
-            OrderId = b.orderRec.Id,
-            PricebookEntryId = b.pbe.Id,
-            Quantity = quantity,
-            UnitPrice = unitPrice,
-            ServiceDate = Date.today(),
-            EndDate = Date.today().addMonths(12)
+        OrderId          = b.orderRec.Id,
+        PricebookEntryId = b.pbe.Id,
+        Quantity         = quantity,
+        UnitPrice        = unitPrice,
+        ServiceDate      = Date.today(),
+        EndDate          = Date.today().addMonths(12),
+        
+        // 🔥 REQUIRED FIELDS (set BEFORE insert)
+        blng__RevenueRecognitionRule__c = getRevRecRule().Id,
+        blng__BillingRule__c            = getBillingRule().Id,
+        blng__TaxRule__c                = getTaxRule().Id
         );
-
+        
         insert oi;
-
         b.orderItem = oi;
         return b;
     }
