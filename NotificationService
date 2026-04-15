@@ -2,10 +2,15 @@
 /**
  * Central email notification service.
  *
- * Two entry points:
- *  - handleResults()     : called after every DML block; emails only on failure.
- *  - sendSummaryEmail()  : called by the batch finish() to send the nightly summary
- *                          regardless of success/failure.
+ * METHOD SUMMARY
+ * ──────────────
+ * handleResults(label, count, results)
+ *     → Inspects SaveResult[] and sends a failure email when any record
+ *       failed. Silent on full success — no noise in a healthy org.
+ *
+ * sendSummaryEmail(subject, body)
+ *     → Sends a plain-text summary email to the admin. Called by the batch
+ *       finish() to send the nightly summary regardless of success/failure.
  *
  * Email addresses are stored as constants here — one place to update them.
  * Production teams should move these to a Custom Metadata Type so they can be
@@ -16,7 +21,7 @@ public class NotificationService {
     @TestVisible private static final String FAILURE_RECIPIENT = 'julius.bwanika@gbg.com';
     @TestVisible private static final String SUMMARY_RECIPIENT = 'salesforce.admin@gbgplc.com';
 
-    // ── DML RESULT HANDLER ────────────────────────────────────────────────────
+    // ── DML RESULT HANDLER ───────────────────────────────────────────────
 
     /**
      * Inspects SaveResult[] and sends a failure email when any record failed.
@@ -40,7 +45,7 @@ public class NotificationService {
                 List<String> errorParts = new List<String>();
                 for (Database.Error e : sr.getErrors()) {
                     errorParts.add(
-                        'Status: '   + e.getStatusCode() +
+                        'Status: '      + e.getStatusCode() +
                         ' | Field(s): ' + String.join(e.getFields(), ', ') +
                         ' | Message: '  + e.getMessage()
                     );
@@ -54,6 +59,7 @@ public class NotificationService {
 
         String subject =
             operationLabel + ' — ' + failureCount + ' failure(s)';
+
         String body =
             'Operation : ' + operationLabel  + '\n' +
             'Attempted : ' + attemptedCount  + '\n' +
@@ -65,7 +71,7 @@ public class NotificationService {
         sendEmail(FAILURE_RECIPIENT, subject, body);
     }
 
-    // ── BATCH SUMMARY ─────────────────────────────────────────────────────────
+    // ── BATCH SUMMARY ────────────────────────────────────────────────────
 
     /**
      * Sends a plain-text summary email to the admin.
@@ -75,7 +81,7 @@ public class NotificationService {
         sendEmail(SUMMARY_RECIPIENT, subject, body);
     }
 
-    // ── PRIVATE HELPER ────────────────────────────────────────────────────────
+    // ── PRIVATE HELPER ───────────────────────────────────────────────────
 
     private static void sendEmail(String recipient, String subject, String body) {
         Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
