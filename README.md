@@ -1,6 +1,7 @@
-System.DmlException: Insert failed. First exception on row 0; first error: DUPLICATES_DETECTED, You are creating a duplicate record. We recommend you use an existing record instead.: [] 
+Database.DMLOptions dml = new Database.DMLOptions();
+dml.DuplicateRuleHeader.allowSave = true;
+dml.DuplicateRuleHeader.runAsCurrentUser = true;
 
-Class.CPQ_TestDataFactory.createAccount: line 197, column 1
-Class.CPQ_TestDataFactory.createOrderWithItem: line 360, column 1
-Class.CPQ_TestDataFactory.createOrderWithItem: line 350, column 1
-Class.CustomerOrderLineServiceTest.integration_afterUpdate_updatesQuantity: line 425, column 1
+Account a = new Account(...);
+a.setOptions(dml);
+insert a;
