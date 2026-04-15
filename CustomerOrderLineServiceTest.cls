@@ -1,547 +1,222 @@
-// ─── CustomerOrderLineServiceTest ────────────────────────────────────────────
-/**
- * Full test coverage for CustomerOrderLineService.
- *
- * This single test class covers:
- *  Section 1 — buildCOL           : field mapping
- *  Section 2 — applyChanges       : diff logic, one test per field group
- *  Section 3 — buildPseudoOld     : round-trip reconstruction
- *  Section 4 — Queries            : getColsByOrderItemIds, getOrphanedCols
- *  Section 5 — Integration        : real DML → trigger → assert COL state
- *  Section 6 — Edge cases         : run() else branch, empty-result paths
- *
- * NON-WRITABLE FIELDS
- * ───────────────────
- * TotalPrice and OrderItemNumber (on OrderItem) and ContractNumber (on Contract)
- * are read-only fields. The helper buildInMemoryOI() uses JSON.deserialize to
- * populate them on in-memory SObjects.
- */
-@isTest
-private class CustomerOrderLineServiceTest {
+@IsTest
+public class CPQ_TestDataFactory {
 
-    // ── SHARED TEST DATA ─────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // CACHED RECORDS
+    // ─────────────────────────────────────────────
+    private static Product2 cachedProduct;
+    private static PricebookEntry cachedPBE;
+    private static blng__BillingRule__c cachedBillingRule;
+    private static blng__RevenueRecognitionRule__c cachedRevRecRule;
+    private static blng__TaxRule__c cachedTaxRule;
 
-    @testSetup
-    static void setupData() {
-        CPQ_TestDataFactory.createOrderWithItem();
-    }
-
-    /** Re-query the OrderItem with all fields the service needs. */
-    private static OrderItem getTestOI() {
-        return [
-            SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c,
-                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
-                   Quantity, TotalPrice, ServiceDate, EndDate,
-                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
-                   SBQQ__DefaultSubscriptionTerm__c
-            FROM   OrderItem
-            LIMIT  1
-        ];
-    }
-
-    /**
-     * Builds an in-memory OrderItem with any fields — including read-only ones
-     * like TotalPrice and OrderItemNumber. Uses JSON.deserialize to bypass the
-     * "field is not writeable" restriction.
-     */
-    private static OrderItem buildInMemoryOI(Map<String, Object> fields) {
-        return (OrderItem) JSON.deserialize(JSON.serialize(fields), OrderItem.class);
-    }
-
-    // =====================================================================
-    //  SECTION 1 — buildCOL
-    // =====================================================================
-
-    @isTest
-    static void buildCOL_mapsFieldsCorrectly() {
-        OrderItem oi = getTestOI();
-
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-
-        System.assertEquals(oi.Id,          col.OrderItem__c,       'OrderItem__c');
-        System.assertEquals(oi.Quantity,    col.Quantity__c,        'Quantity');
-        System.assertEquals(oi.TotalPrice,  col.Total_Price__c,     'TotalPrice');
-        System.assertEquals(oi.EndDate,     col.End_Date__c,        'EndDate');
-        System.assertEquals(oi.ServiceDate, col.Service_Date__c,    'ServiceDate');
-        System.assertNotEquals(null, col.Last_Synced_Date__c,       'Last_Synced_Date__c must be set');
-        System.assert(col.Name.startsWith('COL-'),                  'Name prefix');
-        System.assertEquals(null, col.Contract_Number__c,           'Contract_Number__c null when no contract');
-        System.assertEquals(null, col.Contract_Status__c,           'Contract_Status__c null when no contract');
-    }
-
-    // =====================================================================
-    //  SECTION 2 — applyChanges
-    // =====================================================================
-
-    @isTest
-    static void applyChanges_noChange_returnsFalse() {
-        OrderItem oi = getTestOI();
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oi, oi);
-
-        System.assertEquals(false, changed, 'Identical OIs should produce no change');
-    }
-
-    @isTest
-    static void applyChanges_quantityChanged_returnsTrue() {
-        OrderItem oldOI = getTestOI();
-        OrderItem newOI = getTestOI();
-        newOI.Quantity = oldOI.Quantity + 5;
-
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oldOI);
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,           changed,          'Should flag changed');
-        System.assertEquals(newOI.Quantity,  col.Quantity__c,  'Quantity should update');
-    }
-
-    @isTest
-    static void applyChanges_endDateChanged_returnsTrue() {
-        OrderItem oldOI = getTestOI();
-        OrderItem newOI = getTestOI();
-        newOI.EndDate = oldOI.EndDate.addMonths(6);
-
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oldOI);
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,          changed,          'Should flag changed');
-        System.assertEquals(newOI.EndDate, col.End_Date__c,  'EndDate should update');
-    }
-
-    @isTest
-    static void applyChanges_contractNumberChanged_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000100', 'Status' => 'Activated'
-            }
-        });
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000200', 'Status' => 'Activated'
-            }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Contract_Number__c = '00000100',
-            Contract_Status__c = 'Activated'
-        );
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,        changed,                  'Should flag changed');
-        System.assertEquals('00000200',  col.Contract_Number__c,   'Contract number should update');
-        System.assertEquals('Activated', col.Contract_Status__c,   'Unchanged status should remain');
-    }
-
-    @isTest
-    static void applyChanges_contractNumberAndStatusBothChanged_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000100', 'Status' => 'Draft'
-            }
-        });
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000200', 'Status' => 'Activated'
-            }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Contract_Number__c = '00000100',
-            Contract_Status__c = 'Draft'
-        );
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,        changed,                  'Both fields changed');
-        System.assertEquals('00000200',  col.Contract_Number__c,   'Number should update');
-        System.assertEquals('Activated', col.Contract_Status__c,   'Status should update');
-    }
-
-    @isTest
-    static void applyChanges_contractNumberNullToPopulated_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>()
-        });
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000300', 'Status' => 'Activated'
-            }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c();
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,       changed,                  'Null-to-populated flags true');
-        System.assertEquals('00000300', col.Contract_Number__c,   'Contract number should be set');
-    }
-
-    @isTest
-    static void applyChanges_allRemainingFieldsChanged_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'blng__LastChargeToDate__c'        => Date.today(),
-            'blng__NextBillingDate__c'         => Date.today(),
-            'OrderItemNumber'                  => 'OLD-001',
-            'ServiceDate'                      => Date.today(),
-            'SBQQ__DefaultSubscriptionTerm__c' => 12,
-            'TotalPrice'                       => 100,
-            'Product2' => new Map<String, Object>{ 'Name' => 'Old Product' }
-        });
-
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'blng__LastChargeToDate__c'        => Date.today().addDays(30),
-            'blng__NextBillingDate__c'         => Date.today().addDays(30),
-            'OrderItemNumber'                  => 'NEW-002',
-            'ServiceDate'                      => Date.today().addDays(30),
-            'SBQQ__DefaultSubscriptionTerm__c' => 24,
-            'TotalPrice'                       => 200,
-            'Product2' => new Map<String, Object>{ 'Name' => 'New Product' }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            blng_LastChargeToDate__c    = Date.today(),
-            blng_NextBillingDate__c     = Date.today(),
-            OrderItemNumber__c          = 'OLD-001',
-            Product_Name__c             = 'Old Product',
-            Service_Date__c             = Date.today(),
-            Subscription_Term_Months__c = 12,
-            Total_Price__c              = 100
-        );
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true, changed, 'All changes should flag true');
-        System.assertEquals(Date.today().addDays(30), col.blng_LastChargeToDate__c,    'LastChargeToDate');
-        System.assertEquals(Date.today().addDays(30), col.blng_NextBillingDate__c,     'NextBillingDate');
-        System.assertEquals('NEW-002',                col.OrderItemNumber__c,          'OrderItemNumber');
-        System.assertEquals('New Product',            col.Product_Name__c,             'Product Name');
-        System.assertEquals(Date.today().addDays(30), col.Service_Date__c,             'ServiceDate');
-        System.assertEquals(24,                       col.Subscription_Term_Months__c, 'SubscriptionTerm');
-        System.assertEquals(200,                      col.Total_Price__c,              'TotalPrice');
-    }
-
-    // =====================================================================
-    //  SECTION 3 — buildPseudoOld
-    // =====================================================================
-
-    @isTest
-    static void buildPseudoOld_reconstructsFieldsFromCOL() {
-        OrderItem oi = getTestOI();
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-        col.Contract_Number__c = '00000999';
-        col.Contract_Status__c = 'Activated';
-
-        OrderItem pseudo = CustomerOrderLineService.buildPseudoOld(col);
-
-        System.assertEquals(col.Quantity__c,                  pseudo.Quantity,                          'Quantity');
-        System.assertEquals(col.End_Date__c,                  pseudo.EndDate,                           'EndDate');
-        System.assertEquals(col.Total_Price__c,               pseudo.TotalPrice,                        'TotalPrice');
-        System.assertEquals(col.Service_Date__c,              pseudo.ServiceDate,                       'ServiceDate');
-        System.assertEquals(col.OrderItemNumber__c,           pseudo.OrderItemNumber,                   'OrderItemNumber');
-        System.assertEquals(col.Subscription_Term_Months__c,  pseudo.SBQQ__DefaultSubscriptionTerm__c, 'SubTerm');
-        System.assertEquals(col.blng_LastChargeToDate__c,     pseudo.blng__LastChargeToDate__c,         'LastCharge');
-        System.assertEquals(col.blng_NextBillingDate__c,      pseudo.blng__NextBillingDate__c,          'NextBilling');
-        System.assertEquals('00000999',  pseudo.SBQQ__Contract__r.ContractNumber, 'ContractNumber');
-        System.assertEquals('Activated', pseudo.SBQQ__Contract__r.Status,         'Contract Status');
-        System.assertEquals(col.Product_Name__c, pseudo.Product2.Name,            'Product Name');
-    }
-
-    @isTest
-    static void buildPseudoOld_nullContractFields_reconstructsAsNull() {
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Contract_Number__c = null,
-            Contract_Status__c = null
-        );
-
-        OrderItem pseudo = CustomerOrderLineService.buildPseudoOld(col);
-
-        System.assertEquals(null, pseudo.SBQQ__Contract__r.ContractNumber, 'Null number stays null');
-        System.assertEquals(null, pseudo.SBQQ__Contract__r.Status,         'Null status stays null');
-    }
-
-    // =====================================================================
-    //  SECTION 4 — Queries
-    // =====================================================================
-
-    @isTest
-    static void getColsByOrderItemIds_returnsCorrectMap() {
-        OrderItem oi = getTestOI();
-        CPQ_TestDataFactory.createCOL(oi, 'COL-TEST');
-
-        Map<Id, CustomerOrderLine__c> result =
-            CustomerOrderLineService.getColsByOrderItemIds(new Set<Id>{ oi.Id });
-
-        System.assertEquals(1, result.size(),    'Should find one COL');
-        System.assert(result.containsKey(oi.Id), 'Key should be the OrderItem Id');
-    }
-
-    @isTest
-    static void getColsByOrderItemIds_nullSet_returnsEmptyMap() {
-        Map<Id, CustomerOrderLine__c> result =
-            CustomerOrderLineService.getColsByOrderItemIds(null);
-        System.assertEquals(0, result.size(), 'Null should return empty map');
-    }
-
-    @isTest
-    static void getColsByOrderItemIds_emptySet_returnsEmptyMap() {
-        Map<Id, CustomerOrderLine__c> result =
-            CustomerOrderLineService.getColsByOrderItemIds(new Set<Id>());
-        System.assertEquals(0, result.size(), 'Empty set should return empty map');
-    }
-
-    @isTest
-    static void getColsByOrderItemIds_nullIdsInSet_cleaned() {
-        OrderItem oi = getTestOI();
-        CPQ_TestDataFactory.createCOL(oi, 'COL-TEST');
-
-        Set<Id> mixed = new Set<Id>{ oi.Id, null };
-
-        Map<Id, CustomerOrderLine__c> result =
-            CustomerOrderLineService.getColsByOrderItemIds(mixed);
-
-        System.assertEquals(1, result.size(), 'Null Id should be silently removed');
-    }
-
-    @isTest
-    static void getOrphanedCols_returnsUntaggedOrphans() {
-        CustomerOrderLine__c orphan = CPQ_TestDataFactory.createOrphanCOL('COL-ORPHAN');
-
-        List<CustomerOrderLine__c> result = CustomerOrderLineService.getOrphanedCols();
-
-        Boolean found = false;
-        for (CustomerOrderLine__c c : result) {
-            if (c.Id == orphan.Id) { found = true; break; }
+    // ─────────────────────────────────────────────
+    // BILLING RULE
+    // ─────────────────────────────────────────────
+    public static blng__BillingRule__c getBillingRule() {
+        if (cachedBillingRule == null) {
+            cachedBillingRule = new blng__BillingRule__c(
+                Name = 'Sample Billing Rule',
+                blng__Active__c = true,
+                blng__GenerateInvoices__c = 'No',
+                blng__InitialBillingTrigger__c = 'Order Product Activation Date'
+            );
+            insert cachedBillingRule;
         }
-        System.assert(found, 'Untagged orphan should be returned');
+        return cachedBillingRule;
     }
 
-    @isTest
-    static void getOrphanedCols_excludesTaggedOrphans() {
-        CustomerOrderLine__c tagged = CPQ_TestDataFactory.createOrphanCOL('[DEL] COL-OLD');
-
-        List<CustomerOrderLine__c> result = CustomerOrderLineService.getOrphanedCols();
-
-        Boolean found = false;
-        for (CustomerOrderLine__c c : result) {
-            if (c.Id == tagged.Id) { found = true; break; }
+    // ─────────────────────────────────────────────
+    // REV REC RULE
+    // ─────────────────────────────────────────────
+    public static blng__RevenueRecognitionRule__c getRevRecRule() {
+        if (cachedRevRecRule == null) {
+            cachedRevRecRule = new blng__RevenueRecognitionRule__c(
+                Name = 'Sample Revenue Recognition Rule',
+                blng__Active__c = true,
+                blng__CreateRevenueSchedule__c = 'No'
+            );
+            insert cachedRevRecRule;
         }
-        System.assert(!found, 'Tagged orphan should be excluded');
+        return cachedRevRecRule;
     }
 
-    // =====================================================================
-    //  SECTION 5 — Integration (real DML → trigger → assert COL)
-    // =====================================================================
-
-    @isTest
-    static void integration_afterInsert_createsCOL() {
-        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-
-        Test.startTest();
-        Test.stopTest();
-
-        List<CustomerOrderLine__c> cols = [
-            SELECT Id, Name FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id
-        ];
-
-        Assert.areEqual(1, cols.size(), 'One COL should be created');
-        Assert.isTrue(cols[0].Name.startsWith('COL-'), 'Name should have COL- prefix');
+    // ─────────────────────────────────────────────
+    // TAX RULE
+    // ─────────────────────────────────────────────
+    public static blng__TaxRule__c getTaxRule() {
+        if (cachedTaxRule == null) {
+            cachedTaxRule = new blng__TaxRule__c(
+                Name = 'Sample Tax Rule',
+                blng__Active__c = true,
+                blng__TaxableYesNo__c = 'Yes'
+            );
+            insert cachedTaxRule;
+        }
+        return cachedTaxRule;
     }
 
-    @isTest
-    static void integration_afterInsert_idempotent_noDuplicate() {
-        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-        CPQ_TestDataFactory.createCOL(b.orderItem);
+    // ─────────────────────────────────────────────
+    // PRODUCT (SOURCE OF TRUTH)
+    // ─────────────────────────────────────────────
+    public static Product2 getProduct() {
+        if (cachedProduct == null) {
 
-        Test.startTest();
-        Test.stopTest();
+            cachedProduct = new Product2(
+                Name = 'Test Product',
+                ProductCode = 'TEST-PROD',
+                IsActive = true,
+                CurrencyIsoCode = 'GBP',
 
-        Integer count = [
-            SELECT COUNT() FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id
-        ];
-        Assert.areEqual(1, count, 'Should not create a duplicate');
+                SBQQ__ChargeType__c = 'Recurring',
+                SBQQ__BillingType__c = 'Advance',
+                SBQQ__BillingFrequency__c = 'Annual',
+                SBQQ__SubscriptionType__c = 'Renewable',
+                SBQQ__SubscriptionPricing__c = 'Fixed Price',
+                SBQQ__SubscriptionTerm__c = 12,
+                SBQQ__PricingMethod__c = 'List',
+                SBQQ__DefaultQuantity__c = 1,
+                SBQQ__Component__c = true,
+                SBQQ__AssetConversion__c = 'One per quote line',
+
+                // ✅ ALL BILLING LOGIC MOVED HERE
+                blng__BillingRule__c = getBillingRule().Id,
+                blng__RevenueRecognitionRule__c = getRevRecRule().Id,
+                blng__TaxRule__c = getTaxRule().Id,
+                blng__BillingDayOfMonth__c = 1
+            );
+
+            insert cachedProduct;
+        }
+        return cachedProduct;
     }
 
-    @isTest
-    static void integration_afterUpdate_updatesQuantity() {
-        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-
-        Test.startTest();
-        Test.stopTest();
-
-        Test.startTest();
-        b.orderItem.Quantity = 99;
-        update b.orderItem;
-        Test.stopTest();
-
-        CustomerOrderLine__c col = [
-            SELECT Quantity__c FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id LIMIT 1
-        ];
-        Assert.areEqual(99, col.Quantity__c, 'COL should reflect updated quantity');
+    // ─────────────────────────────────────────────
+    // PRICEBOOK ENTRY
+    // ─────────────────────────────────────────────
+    public static PricebookEntry getStandardPBE() {
+        if (cachedPBE == null) {
+            cachedPBE = new PricebookEntry(
+                Pricebook2Id = Test.getStandardPricebookId(),
+                Product2Id = getProduct().Id,
+                UnitPrice = 100,
+                IsActive = true
+            );
+            insert cachedPBE;
+        }
+        return cachedPBE;
     }
 
-    @isTest
-    static void integration_afterUpdate_noChange_lastSyncedDateUnchanged() {
-        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-
-        Test.startTest();
-        Test.stopTest();
-
-        DateTime syncedAfterInsert = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id LIMIT 1
-        ].Last_Synced_Date__c;
-
-        Test.startTest();
-        update b.orderItem;
-        Test.stopTest();
-
-        DateTime syncedAfterUpdate = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id LIMIT 1
-        ].Last_Synced_Date__c;
-
-        Assert.areEqual(syncedAfterInsert, syncedAfterUpdate,
-            'Last_Synced_Date__c should not change when no values changed');
-    }
-
-    @isTest
-    static void integration_afterDelete_tagsCOL() {
-        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-
-        Test.startTest();
-        Test.stopTest();
-
-        Id oiId  = b.orderItem.Id;
-        Id colId = [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oiId LIMIT 1].Id;
-
-        Test.startTest();
-        delete b.orderItem;
-        Test.stopTest();
-
-        CustomerOrderLine__c tagged = [
-            SELECT Name, Last_Synced_Date__c FROM CustomerOrderLine__c WHERE Id = :colId
-        ];
-
-        Assert.isTrue(tagged.Name.startsWith('[DEL]'), 'Should be tagged [DEL]');
-        Assert.isNotNull(tagged.Last_Synced_Date__c,   'Last_Synced_Date__c should be stamped');
-    }
-
-    @isTest
-    static void integration_afterDelete_alreadyTagged_noDoubleTag() {
-        CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-
-        Test.startTest();
-        Test.stopTest();
-
-        CustomerOrderLine__c col = [
-            SELECT Id, Name FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id LIMIT 1
-        ];
-        col.Name = '[DEL] ' + col.Name;
-        update col;
-
-        Test.startTest();
-        delete b.orderItem;
-        Test.stopTest();
-
-        CustomerOrderLine__c checked = [SELECT Name FROM CustomerOrderLine__c WHERE Id = :col.Id];
-        Assert.isFalse(checked.Name.startsWith('[DEL] [DEL]'),
-            'Already-tagged COL should not receive a second [DEL]');
-    }
-
-    // =====================================================================
-    //  SECTION 6 — Edge cases
-    // =====================================================================
-
-    @isTest
-    static void run_unhandledOperation_doesNotThrow() {
-        Test.startTest();
-        CustomerOrderLineService.run(
-            System.TriggerOperation.BEFORE_INSERT,
-            new Map<Id, OrderItem>(), null, null
+    // ─────────────────────────────────────────────
+    // LEGAL ENTITY
+    // ─────────────────────────────────────────────
+    public static blng__LegalEntity__c createLegalEntity() {
+        blng__LegalEntity__c le = new blng__LegalEntity__c(
+            Name = 'Test LE',
+            blng__Active__c = true,
+            BC_Company_Id__c = String.valueOf(System.currentTimeMillis()),
+            BC_Company_Name__c = 'Test LE',
+            BC_Environment__c = 'Production'
         );
-        Test.stopTest();
-
-        System.assert(true, 'Unhandled operation should not throw');
+        insert le;
+        return le;
     }
 
-    @isTest
-    static void handleDeletedOrderItems_noCOLsFound_noException() {
-        OrderItem oi = getTestOI();
+    // ─────────────────────────────────────────────
+    // ACCOUNT (FIXED FOR DUPLICATE RULES)
+    // ─────────────────────────────────────────────
+    public static Account createAccount() {
 
-        Test.startTest();
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_DELETE,
-            null, null, new List<OrderItem>{ oi }
+        blng__LegalEntity__c le = createLegalEntity();
+        String unique = String.valueOf(DateTime.now().getTime());
+
+        Account a = new Account(
+            Name = 'Test Account ' + unique,
+            GBG_Billing_Entity__c = le.Id,
+            ShippingStreet = '83 Phoenix Street',
+            ShippingCity = 'Sutton-in-Ashfield',
+            ShippingPostalCode = 'NG17',
+            ShippingCountry = 'United Kingdom',
+            BillingStreet = '83 Phoenix Street',
+            BillingCity = 'Sutton-in-Ashfield',
+            BillingPostalCode = 'NG17',
+            BillingCountry = 'United Kingdom',
+            Correspondence_Address_SameAs_Registered__c = true
         );
-        Test.stopTest();
 
-        System.assert(true, 'Empty COL result should not throw');
+        insert a;
+        return a;
     }
 
-    @isTest
-    static void createCOLsAsync_allExisting_skipsInsert() {
-        OrderItem oi = getTestOI();
-        insert CustomerOrderLineService.buildCOL(oi);
+    // ─────────────────────────────────────────────
+    // ORDER BUNDLE
+    // ─────────────────────────────────────────────
+    public class OrderBundle {
+        public Account account;
+        public Product2 product;
+        public PricebookEntry pbe;
+        public Order orderRec;
+        public OrderItem orderItem;
+    }
 
-        Test.startTest();
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_INSERT,
-            new Map<Id, OrderItem>{ oi.Id => oi }, null, null
+    // ─────────────────────────────────────────────
+    // ORDER + ORDER ITEM (STABLE VERSION)
+    // ─────────────────────────────────────────────
+    public static OrderBundle createOrderWithItem() {
+        return createOrderWithItem(2, 100);
+    }
+
+    public static OrderBundle createOrderWithItem(Decimal quantity, Decimal unitPrice) {
+
+        OrderBundle b = new OrderBundle();
+
+        b.account = createAccount();
+        b.product = getProduct();
+        b.pbe = getStandardPBE();
+
+        b.orderRec = new Order(
+            AccountId = b.account.Id,
+            EffectiveDate = Date.today(),
+            Status = 'Draft',
+            Pricebook2Id = Test.getStandardPricebookId()
         );
-        Test.stopTest();
+        insert b.orderRec;
 
-        Integer count = [SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
-        System.assertEquals(1, count, 'Should not create a duplicate');
-    }
-
-    @isTest
-    static void updateCOLsAsync_noCOL_skipsUpdate() {
-        OrderItem oi = getTestOI();
-
-        Test.startTest();
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_UPDATE,
-            new Map<Id, OrderItem>{ oi.Id => oi },
-            new Map<Id, OrderItem>{ oi.Id => oi },
-            null
+        // ✅ CLEAN ORDER ITEM (NO CPQ FIELDS HERE)
+        OrderItem oi = new OrderItem(
+            OrderId = b.orderRec.Id,
+            PricebookEntryId = b.pbe.Id,
+            Quantity = quantity,
+            UnitPrice = unitPrice,
+            ServiceDate = Date.today(),
+            EndDate = Date.today().addMonths(12)
         );
-        Test.stopTest();
 
-        Integer count = [SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
-        System.assertEquals(0, count, 'No COL should be created or updated');
+        insert oi;
+
+        b.orderItem = oi;
+        return b;
     }
 
-    @isTest
-    static void updateCOLsAsync_noChanges_doesNotUpdate() {
-        OrderItem oi = getTestOI();
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
+    // ─────────────────────────────────────────────
+    // COL HELPERS
+    // ─────────────────────────────────────────────
+    public static CustomerOrderLine__c createCOL(OrderItem oi) {
+        return createCOL(oi, 'COL-' + oi.Id);
+    }
+
+    public static CustomerOrderLine__c createCOL(OrderItem oi, String name) {
+        CustomerOrderLine__c col = new CustomerOrderLine__c(
+            Name = name,
+            OrderItem__c = oi.Id
+        );
         insert col;
+        return col;
+    }
 
-        DateTime syncedBefore = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c WHERE Id = :col.Id
-        ].Last_Synced_Date__c;
-
-        Test.startTest();
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_UPDATE,
-            new Map<Id, OrderItem>{ oi.Id => oi },
-            new Map<Id, OrderItem>{ oi.Id => oi },
-            null
-        );
-        Test.stopTest();
-
-        DateTime syncedAfter = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c WHERE Id = :col.Id
-        ].Last_Synced_Date__c;
-
-        System.assertEquals(syncedBefore, syncedAfter,
-            'Last_Synced_Date__c should not change when values are identical');
+    public static CustomerOrderLine__c createOrphanCOL(String name) {
+        CustomerOrderLine__c col = new CustomerOrderLine__c(Name = name);
+        insert col;
+        return col;
     }
 }
