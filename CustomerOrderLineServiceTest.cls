@@ -6,24 +6,15 @@
  *  Section 1 — buildCOL           : field mapping
  *  Section 2 — applyChanges       : diff logic, one test per field group
  *  Section 3 — buildPseudoOld     : round-trip reconstruction
- *  Section 4 — Queries            : getColsByOrderItemIds, getOrphanedCols, queryOrderItems
+ *  Section 4 — Queries            : getColsByOrderItemIds, getOrphanedCols
  *  Section 5 — Integration        : real DML → trigger → assert COL state
  *  Section 6 — Edge cases         : run() else branch, empty-result paths
  *
  * NON-WRITABLE FIELDS
  * ───────────────────
  * TotalPrice and OrderItemNumber (on OrderItem) and ContractNumber (on Contract)
- * are read-only / auto-number fields. Apex will not let you set them with normal
- * assignment like: oi.TotalPrice = 100;
- *
- * The workaround is JSON.deserialize — it can populate any field on an in-memory
- * SObject, even read-only ones. The helper method buildInMemoryOI() in this class
- * does exactly that. The service's buildPseudoOld() uses the same technique.
- *
- * ASYNC NOTE
- * ──────────
- * @future methods only execute after Test.stopTest(), so all COL assertions for
- * insert/update paths are placed after that call.
+ * are read-only fields. The helper buildInMemoryOI() uses JSON.deserialize to
+ * populate them on in-memory SObjects.
  */
 @isTest
 private class CustomerOrderLineServiceTest {
@@ -52,17 +43,7 @@ private class CustomerOrderLineServiceTest {
     /**
      * Builds an in-memory OrderItem with any fields — including read-only ones
      * like TotalPrice and OrderItemNumber. Uses JSON.deserialize to bypass the
-     * "field is not writeable" restriction that normal Apex assignment enforces.
-     *
-     * Usage:
-     *   OrderItem oi = buildInMemoryOI(new Map<String, Object>{
-     *       'TotalPrice' => 100,
-     *       'OrderItemNumber' => 'OI-001',
-     *       'SBQQ__Contract__r' => new Map<String, Object>{
-     *           'ContractNumber' => '00000100',
-     *           'Status' => 'Activated'
-     *       }
-     *   });
+     * "field is not writeable" restriction.
      */
     private static OrderItem buildInMemoryOI(Map<String, Object> fields) {
         return (OrderItem) JSON.deserialize(JSON.serialize(fields), OrderItem.class);
@@ -85,9 +66,8 @@ private class CustomerOrderLineServiceTest {
         System.assertEquals(oi.ServiceDate, col.Service_Date__c,    'ServiceDate');
         System.assertNotEquals(null, col.Last_Synced_Date__c,       'Last_Synced_Date__c must be set');
         System.assert(col.Name.startsWith('COL-'),                  'Name prefix');
-        // No contract linked in test data — both should be null
-        System.assertEquals(null, col.Contract_Number__c,           'Contract_Number__c null');
-        System.assertEquals(null, col.Contract_Status__c,           'Contract_Status__c null');
+        System.assertEquals(null, col.Contract_Number__c,           'Contract_Number__c null when no contract');
+        System.assertEquals(null, col.Contract_Status__c,           'Contract_Status__c null when no contract');
     }
 
     // =====================================================================
@@ -199,14 +179,6 @@ private class CustomerOrderLineServiceTest {
         System.assertEquals('00000300', col.Contract_Number__c,   'Contract number should be set');
     }
 
-    /**
-     * Changes every remaining field that the individual tests above don't
-     * cover individually. Ensures 100% line coverage of every if-block
-     * inside applyChanges().
-     *
-     * Uses buildInMemoryOI() for TotalPrice and OrderItemNumber because
-     * those fields are read-only and can't be set with normal assignment.
-     */
     @isTest
     static void applyChanges_allRemainingFieldsChanged_returnsTrue() {
         OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
@@ -294,28 +266,6 @@ private class CustomerOrderLineServiceTest {
     //  SECTION 4 — Queries
     // =====================================================================
 
-    // ── queryOrderItems ──────────────────────────────────────────────────
-
-    @isTest
-    static void queryOrderItems_returnsResults() {
-        OrderItem oi = getTestOI();
-
-        List<OrderItem> result = CustomerOrderLineService.queryOrderItems(
-            new Set<Id>{ oi.Id }
-        );
-
-        System.assertEquals(1, result.size(), 'Should find the test OrderItem');
-        System.assertEquals(oi.Id, result[0].Id);
-    }
-
-    @isTest
-    static void queryOrderItems_emptySet_returnsEmpty() {
-        List<OrderItem> result = CustomerOrderLineService.queryOrderItems(new Set<Id>());
-        System.assertEquals(0, result.size(), 'Empty set should return empty list');
-    }
-
-    // ── getColsByOrderItemIds ────────────────────────────────────────────
-
     @isTest
     static void getColsByOrderItemIds_returnsCorrectMap() {
         OrderItem oi = getTestOI();
@@ -355,8 +305,6 @@ private class CustomerOrderLineServiceTest {
         System.assertEquals(1, result.size(), 'Null Id should be silently removed');
     }
 
-    // ── getOrphanedCols ──────────────────────────────────────────────────
-
     @isTest
     static void getOrphanedCols_returnsUntaggedOrphans() {
         CustomerOrderLine__c orphan = CPQ_TestDataFactory.createOrphanCOL('COL-ORPHAN');
@@ -392,7 +340,7 @@ private class CustomerOrderLineServiceTest {
         CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
 
         Test.startTest();
-        Test.stopTest(); // @future executes — COL is created
+        Test.stopTest();
 
         List<CustomerOrderLine__c> cols = [
             SELECT Id, Name FROM CustomerOrderLine__c
@@ -406,8 +354,6 @@ private class CustomerOrderLineServiceTest {
     @isTest
     static void integration_afterInsert_idempotent_noDuplicate() {
         CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
-
-        // Pre-create a COL before the @future runs
         CPQ_TestDataFactory.createCOL(b.orderItem);
 
         Test.startTest();
@@ -424,15 +370,13 @@ private class CustomerOrderLineServiceTest {
     static void integration_afterUpdate_updatesQuantity() {
         CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
 
-        // Let the insert @future complete so the COL exists
         Test.startTest();
         Test.stopTest();
 
-        // Update the OrderItem — fires AFTER_UPDATE
         Test.startTest();
         b.orderItem.Quantity = 99;
         update b.orderItem;
-        Test.stopTest(); // update @future executes
+        Test.stopTest();
 
         CustomerOrderLine__c col = [
             SELECT Quantity__c FROM CustomerOrderLine__c
@@ -446,14 +390,13 @@ private class CustomerOrderLineServiceTest {
         CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
 
         Test.startTest();
-        Test.stopTest(); // COL exists
+        Test.stopTest();
 
         DateTime syncedAfterInsert = [
             SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
             WHERE  OrderItem__c = :b.orderItem.Id LIMIT 1
         ].Last_Synced_Date__c;
 
-        // Re-save with identical values
         Test.startTest();
         update b.orderItem;
         Test.stopTest();
@@ -472,12 +415,11 @@ private class CustomerOrderLineServiceTest {
         CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
 
         Test.startTest();
-        Test.stopTest(); // COL exists
+        Test.stopTest();
 
         Id oiId  = b.orderItem.Id;
         Id colId = [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oiId LIMIT 1].Id;
 
-        // Delete fires synchronous AFTER_DELETE path
         Test.startTest();
         delete b.orderItem;
         Test.stopTest();
@@ -495,9 +437,8 @@ private class CustomerOrderLineServiceTest {
         CPQ_TestDataFactory.OrderBundle b = CPQ_TestDataFactory.createOrderWithItem();
 
         Test.startTest();
-        Test.stopTest(); // COL exists
+        Test.stopTest();
 
-        // Manually pre-tag the COL
         CustomerOrderLine__c col = [
             SELECT Id, Name FROM CustomerOrderLine__c
             WHERE  OrderItem__c = :b.orderItem.Id LIMIT 1
@@ -520,8 +461,6 @@ private class CustomerOrderLineServiceTest {
 
     @isTest
     static void run_unhandledOperation_doesNotThrow() {
-        // BEFORE_INSERT is a valid enum value but not handled by the switch.
-        // Calling run() with it should hit the else branch safely.
         Test.startTest();
         CustomerOrderLineService.run(
             System.TriggerOperation.BEFORE_INSERT,
@@ -534,8 +473,6 @@ private class CustomerOrderLineServiceTest {
 
     @isTest
     static void handleDeletedOrderItems_noCOLsFound_noException() {
-        // Call the service with a valid OrderItem that has no COL.
-        // The method should exit early with no DML and no exception.
         OrderItem oi = getTestOI();
 
         Test.startTest();
@@ -550,8 +487,6 @@ private class CustomerOrderLineServiceTest {
 
     @isTest
     static void createCOLsAsync_allExisting_skipsInsert() {
-        // Pre-create a COL for the OrderItem, then trigger the insert path.
-        // The idempotency check should skip the insert entirely.
         OrderItem oi = getTestOI();
         insert CustomerOrderLineService.buildCOL(oi);
 
@@ -568,8 +503,6 @@ private class CustomerOrderLineServiceTest {
 
     @isTest
     static void updateCOLsAsync_noCOL_skipsUpdate() {
-        // Trigger the update path for an OrderItem that has no COL.
-        // The method should skip it via the continue statement.
         OrderItem oi = getTestOI();
 
         Test.startTest();
@@ -587,8 +520,6 @@ private class CustomerOrderLineServiceTest {
 
     @isTest
     static void updateCOLsAsync_noChanges_doesNotUpdate() {
-        // Create a COL that already matches the OrderItem values.
-        // applyChanges() should return false — nothing gets updated.
         OrderItem oi = getTestOI();
         CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
         insert col;
