@@ -10,11 +10,12 @@ public class CustomerOrderLineService {
      */
     public static CustomerOrderLine__c buildCOL(OrderItem o) {
         CustomerOrderLine__c col = new CustomerOrderLine__c();
-        col.Name                        = CustomerOrderLinesUtils.formatColName(o);
+        col.Name                        = AppUtils.formatColName(o);
         col.OrderItem__c                = o.Id;
         col.Account__c                  = o.Order?.AccountId;
         col.blng_LastChargeToDate__c    = o.blng__LastChargeToDate__c;
         col.blng_NextBillingDate__c     = o.blng__NextBillingDate__c;
+        col.Contract_Number__c          = o.SBQQ__Contract__r?.ContractNumber;
         col.Contract_Status__c          = o.SBQQ__Contract__r?.Status;
         col.End_Date__c                 = o.EndDate;
         col.Last_Synced_Date__c         = System.now();
@@ -41,6 +42,12 @@ public class CustomerOrderLineService {
         }
         if (oldOI.blng__NextBillingDate__c != newOI.blng__NextBillingDate__c) {
             col.blng_NextBillingDate__c = newOI.blng__NextBillingDate__c; changed = true;
+        }
+
+        String oldContractNum = oldOI.SBQQ__Contract__r?.ContractNumber;
+        String newContractNum = newOI.SBQQ__Contract__r?.ContractNumber;
+        if (oldContractNum != newContractNum) {
+            col.Contract_Number__c = newContractNum; changed = true;
         }
 
         String oldStatus = oldOI.SBQQ__Contract__r?.Status;
@@ -91,10 +98,10 @@ public class CustomerOrderLineService {
      */
     @future
     private static void createCOLsAsync(Set<Id> orderItemIds) {
-        // Re-query with every field buildCOL needs
         List<OrderItem> items = [
             SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c, SBQQ__Contract__r.Status,
+                   Order.AccountId, SBQQ__Contract__c,
+                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
                    Quantity, TotalPrice, ServiceDate, EndDate,
                    blng__LastChargeToDate__c, blng__NextBillingDate__c,
                    SBQQ__DefaultSubscriptionTerm__c
@@ -102,7 +109,6 @@ public class CustomerOrderLineService {
             WHERE  Id IN :orderItemIds
         ];
 
-        // Idempotency: skip any OI that already has a COL
         Map<Id, CustomerOrderLine__c> existing =
             CustomerOrderLineRepository.getByOrderItemIds(orderItemIds);
 
@@ -125,36 +131,27 @@ public class CustomerOrderLineService {
 
     /**
      * Called from the trigger. Serialises old/new IDs and offloads to async.
-     * We pass two parallel Id lists (old, new) because @future only accepts
-     * primitives — SObjects cannot be passed across the async boundary.
-     *
-     * Both lists are positionally matched: newIds[i] and oldIds[i] are the
-     * same logical record before and after the update.
      */
     public static void handleUpdates(Map<Id, OrderItem> newOIMap, Map<Id, OrderItem> oldOIMap) {
         List<Id> newIds = new List<Id>();
-        List<Id> oldIds = new List<Id>(); // same Ids — kept parallel for future boundary
+        List<Id> oldIds = new List<Id>();
 
         for (Id id : newOIMap.keySet()) {
             newIds.add(id);
-            oldIds.add(id); // same Id; we pass twice so the future can re-query both maps
+            oldIds.add(id);
         }
         updateCOLsAsync(newIds, oldIds);
     }
 
     /**
-     * @future — re-queries old and new states then diffs them.
-     * Because we cannot pass SObjects, we pass Id lists and re-query inside.
-     * Salesforce does not provide "before" values after commit, so we diff
-     * the COL's stored values (which reflect the old state) against the
-     * freshly queried OrderItem fields (the new state).
+     * @future — re-queries current state then diffs against COL stored values.
      */
     @future
     private static void updateCOLsAsync(List<Id> orderItemIds, List<Id> ignored) {
-        // Re-query current (new) OrderItem values
         Map<Id, OrderItem> freshItems = new Map<Id, OrderItem>([
             SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c, SBQQ__Contract__r.Status,
+                   Order.AccountId, SBQQ__Contract__c,
+                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
                    Quantity, TotalPrice, ServiceDate, EndDate,
                    blng__LastChargeToDate__c, blng__NextBillingDate__c,
                    SBQQ__DefaultSubscriptionTerm__c
@@ -162,7 +159,6 @@ public class CustomerOrderLineService {
             WHERE  Id IN :orderItemIds
         ]);
 
-        // Existing COLs hold the previously-synced (old) field values
         Set<Id> idSet = new Set<Id>(orderItemIds);
         Map<Id, CustomerOrderLine__c> existingByOI =
             CustomerOrderLineRepository.getByOrderItemIds(idSet);
@@ -176,7 +172,6 @@ public class CustomerOrderLineService {
             CustomerOrderLine__c col   = existingByOI.get(oiId);
             OrderItem            newOI = freshItems.get(oiId);
 
-            // Build a "pseudo-old" OI from the COL's stored values for diffing
             OrderItem pseudoOld = buildPseudoOld(col);
 
             Boolean changed = applyChanges(col, pseudoOld, newOI);
@@ -199,44 +194,42 @@ public class CustomerOrderLineService {
      * This is needed in the async path because old trigger values are gone
      * by the time the future method runs.
      */
-@TestVisible
-private static OrderItem buildPseudoOld(CustomerOrderLine__c col) {
-    OrderItem pseudo = new OrderItem();
-    pseudo.blng__LastChargeToDate__c        = col.blng_LastChargeToDate__c;
-    pseudo.blng__NextBillingDate__c         = col.blng_NextBillingDate__c;
-    pseudo.EndDate                          = col.End_Date__c;
-    pseudo.OrderItemNumber                  = col.OrderItemNumber__c;
-    pseudo.Quantity                         = col.Quantity__c;
-    pseudo.ServiceDate                      = col.Service_Date__c;
-    pseudo.SBQQ__DefaultSubscriptionTerm__c = col.Subscription_Term_Months__c;
-    pseudo.TotalPrice                       = col.Total_Price__c;
-    // FIXED: Contract Status and Product Name must be reconstructed so
-    // applyChanges() can diff them correctly. Without this, oldStatus/oldProd
-    // are always null, causing false positives or missed diffs.
-    pseudo.SBQQ__Contract__r               = new Contract(Status = col.Contract_Status__c);
-    pseudo.Product2                         = new Product2(Name = col.Product_Name__c);
-    return pseudo;
-}
+    @TestVisible
+    private static OrderItem buildPseudoOld(CustomerOrderLine__c col) {
+        OrderItem pseudo = new OrderItem();
+        pseudo.blng__LastChargeToDate__c        = col.blng_LastChargeToDate__c;
+        pseudo.blng__NextBillingDate__c         = col.blng_NextBillingDate__c;
+        pseudo.EndDate                          = col.End_Date__c;
+        pseudo.OrderItemNumber                  = col.OrderItemNumber__c;
+        pseudo.Quantity                         = col.Quantity__c;
+        pseudo.ServiceDate                      = col.Service_Date__c;
+        pseudo.SBQQ__DefaultSubscriptionTerm__c = col.Subscription_Term_Months__c;
+        pseudo.TotalPrice                       = col.Total_Price__c;
+        pseudo.SBQQ__Contract__r                = new Contract(
+            ContractNumber = col.Contract_Number__c,
+            Status         = col.Contract_Status__c
+        );
+        pseudo.Product2                         = new Product2(Name = col.Product_Name__c);
+        return pseudo;
+    }
 
     // ── AFTER DELETE ─────────────────────────────────────────────────────────
 
     /**
      * Delete MUST stay synchronous — OrderItem Ids are no longer queryable
      * after the transaction commits, so we act before the commit window closes.
-     * We only update the COL name (prepend [DEL]) and stamp Last_Synced_Date__c.
      */
     public static void handleUpdateToDeleted(List<OrderItem> deletedOIList) {
         Set<Id> idSet = new Set<Id>();
         for (OrderItem oi : deletedOIList) { idSet.add(oi.Id); }
 
-        // Delegated to Repository — no raw SOQL in the service layer
         List<CustomerOrderLine__c> cols =
             CustomerOrderLineRepository.getByOrderItemIdsList(idSet);
 
         List<CustomerOrderLine__c> toUpdate = new List<CustomerOrderLine__c>();
         for (CustomerOrderLine__c col : cols) {
-            col.Name                = CustomerOrderLinesUtils.prependDeletedTag(col.Name);
-            col.Last_Synced_Date__c = System.now(); // stamp when the delete was processed
+            col.Name                = AppUtils.prependDeletedTag(col.Name);
+            col.Last_Synced_Date__c = System.now();
             toUpdate.add(col);
         }
 
