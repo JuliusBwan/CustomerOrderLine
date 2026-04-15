@@ -60,11 +60,13 @@ public class CPQ_TestDataFactory {
     // PRODUCT (SOURCE OF TRUTH)
     // ─────────────────────────────────────────────
     public static Product2 getProduct() {
+        String unique = String.valueOf(DateTime.now().getTime());
+        
         if (cachedProduct == null) {
 
             cachedProduct = new Product2(
-                Name = 'Test Product',
-                ProductCode = 'TEST-PROD',
+                Name = 'Test Product ' + unique,
+                ProductCode = 'TEST-PROD-' + unique,
                 IsActive = true,
                 CurrencyIsoCode = 'GBP',
 
@@ -82,8 +84,7 @@ public class CPQ_TestDataFactory {
                 // ✅ ALL BILLING LOGIC MOVED HERE
                 blng__BillingRule__c = getBillingRule().Id,
                 blng__RevenueRecognitionRule__c = getRevRecRule().Id,
-                blng__TaxRule__c = getTaxRule().Id,
-                blng__BillingDayOfMonth__c = 1
+                blng__TaxRule__c = getTaxRule().Id
             );
 
             insert cachedProduct;
@@ -111,11 +112,13 @@ public class CPQ_TestDataFactory {
     // LEGAL ENTITY
     // ─────────────────────────────────────────────
     public static blng__LegalEntity__c createLegalEntity() {
+        String unique = String.valueOf(System.currentTimeMillis());
+        
         blng__LegalEntity__c le = new blng__LegalEntity__c(
             Name = 'Test LE',
             blng__Active__c = true,
-            BC_Company_Id__c = String.valueOf(System.currentTimeMillis()),
-            BC_Company_Name__c = 'Test LE',
+            BC_Company_Id__c = unique,
+            BC_Company_Name__c = 'Test LE ' + unique,
             BC_Environment__c = 'Production'
         );
         insert le;
@@ -179,9 +182,7 @@ public class CPQ_TestDataFactory {
             EffectiveDate = Date.today(),
             Status = 'Draft',
             Pricebook2Id = Test.getStandardPricebookId(),
-        
-            // 🔥 REQUIRED BY YOUR VALIDATION RULE
-            Billing_Day_of_Month__c = '1'   // string field per your note
+            blng__BillingDayOfMonth__c = '9'
         );
         insert b.orderRec;
 
