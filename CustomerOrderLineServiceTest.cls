@@ -9,15 +9,15 @@
  *  Section 5 — Integration        : real DML → trigger → assert COL state
  *  Section 6 — Edge cases         : run() else branch, empty-result paths
  *
- * IMPORTANT PATTERNS
- * ──────────────────
- *  - Only ONE Test.startTest()/Test.stopTest() per test method.
- *  - Requery the OrderItem before updating it (avoids stale reference issues).
- *  - For tests that need a COL to exist before update/delete, create it
- *    manually with CPQ_TestDataFactory.createCOL() so we don't depend on
- *    @future execution timing.
- *  - Read-only fields (TotalPrice, OrderItemNumber, ContractNumber) use
- *    JSON.deserialize via the buildInMemoryOI() helper.
+ * IMPORTANT — @testSetup creates a COL
+ * ─────────────────────────────────────
+ * The @testSetup calls createOrderWithItem() which inserts an OrderItem.
+ * That fires the trigger, which enqueues createCOLsAsync(). Salesforce
+ * executes @future methods during @testSetup, so by the time any test
+ * method runs, the @testSetup OrderItem ALREADY HAS a COL.
+ *
+ * Tests that need "no COL" must delete it first. Tests that need "exactly
+ * one COL" must not insert a second one manually.
  */
 @IsTest
 private class CustomerOrderLineServiceTest {
@@ -44,8 +44,7 @@ private class CustomerOrderLineServiceTest {
 
     /**
      * Builds an in-memory OrderItem with any fields — including read-only
-     * ones like TotalPrice and OrderItemNumber. Uses JSON.deserialize to
-     * bypass the "field is not writeable" restriction.
+     * ones like TotalPrice and OrderItemNumber.
      */
     private static OrderItem buildInMemoryOI(Map<String, Object> fields) {
         return (OrderItem) JSON.deserialize(JSON.serialize(fields), OrderItem.class);
@@ -162,10 +161,9 @@ private class CustomerOrderLineServiceTest {
     }
 
     /**
-     * Covers every remaining if-block inside applyChanges() that the
-     * individual tests above don't hit: blng dates, OrderItemNumber,
-     * Product Name, ServiceDate, SubscriptionTerm, TotalPrice.
-     * All in-memory — no DML, no tax rule needed.
+     * Covers every remaining if-block inside applyChanges(): blng dates,
+     * OrderItemNumber, Product Name, ServiceDate, SubscriptionTerm, TotalPrice.
+     * All in-memory — no DML, no validation rules involved.
      */
     @IsTest
     static void applyChanges_allRemainingFieldsChanged_returnsTrue() {
@@ -201,14 +199,14 @@ private class CustomerOrderLineServiceTest {
 
         Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
 
-        System.assertEquals(true,                      changed);
-        System.assertEquals(Date.today().addDays(30),   col.blng_LastChargeToDate__c);
-        System.assertEquals(Date.today().addDays(30),   col.blng_NextBillingDate__c);
-        System.assertEquals('NEW-002',                  col.OrderItemNumber__c);
-        System.assertEquals('New Product',              col.Product_Name__c);
-        System.assertEquals(Date.today().addDays(30),   col.Service_Date__c);
-        System.assertEquals(24,                         col.Subscription_Term_Months__c);
-        System.assertEquals(200,                        col.Total_Price__c);
+        System.assertEquals(true,                     changed);
+        System.assertEquals(Date.today().addDays(30), col.blng_LastChargeToDate__c);
+        System.assertEquals(Date.today().addDays(30), col.blng_NextBillingDate__c);
+        System.assertEquals('NEW-002',                col.OrderItemNumber__c);
+        System.assertEquals('New Product',            col.Product_Name__c);
+        System.assertEquals(Date.today().addDays(30), col.Service_Date__c);
+        System.assertEquals(24,                       col.Subscription_Term_Months__c);
+        System.assertEquals(200,                      col.Total_Price__c);
     }
 
     // =====================================================================
@@ -257,7 +255,7 @@ private class CustomerOrderLineServiceTest {
     @IsTest
     static void getColsByOrderItemIds_returnsMap() {
         OrderItem oi = getTestOI();
-        CPQ_TestDataFactory.createCOL(oi, 'COL-TEST');
+        // @testSetup trigger already created a COL for this OI
 
         Map<Id, CustomerOrderLine__c> result =
             CustomerOrderLineService.getColsByOrderItemIds(new Set<Id>{ oi.Id });
@@ -281,7 +279,7 @@ private class CustomerOrderLineServiceTest {
     @IsTest
     static void getColsByOrderItemIds_nullIdsInSet_cleaned() {
         OrderItem oi = getTestOI();
-        CPQ_TestDataFactory.createCOL(oi, 'COL-TEST');
+        // @testSetup trigger already created a COL for this OI
 
         Set<Id> mixed = new Set<Id>{ oi.Id, null };
 
@@ -321,9 +319,8 @@ private class CustomerOrderLineServiceTest {
     //  SECTION 5 — Integration (real DML → trigger → assert COL)
     //
     //  Each method uses ONE Test.startTest()/Test.stopTest() pair.
-    //  Where a COL must exist before an update or delete, we create it
-    //  manually with CPQ_TestDataFactory.createCOL() so we don't depend
-    //  on @future execution timing.
+    //  Each creates FRESH data via createOrderWithItem() so the
+    //  @future from @testSetup does not interfere.
     // =====================================================================
 
     @IsTest
@@ -368,7 +365,7 @@ private class CustomerOrderLineServiceTest {
 
         Test.startTest();
 
-        // Requery before update — avoids stale trigger state issues
+        // Requery before update — avoids stale reference issues
         OrderItem oi = [
             SELECT Id, Quantity FROM OrderItem
             WHERE  Id = :b.orderItem.Id
@@ -391,13 +388,8 @@ private class CustomerOrderLineServiceTest {
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
 
-        // Manually create a COL so we have a known sync timestamp
-        CustomerOrderLine__c preCOL = CustomerOrderLineService.buildCOL(
-            getTestOI() // requery to get all fields, but the @testSetup OI works too
-        );
-        // Use the factory OI's Id for the link
-        preCOL.OrderItem__c = b.orderItem.Id;
-        insert preCOL;
+        // Manually create a COL with a known sync timestamp
+        CustomerOrderLine__c preCOL = CPQ_TestDataFactory.createCOL(b.orderItem);
 
         DateTime syncedBefore = [
             SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
@@ -406,9 +398,7 @@ private class CustomerOrderLineServiceTest {
 
         Test.startTest();
         // Requery and re-save with no changes
-        OrderItem oi = [
-            SELECT Id FROM OrderItem WHERE Id = :b.orderItem.Id
-        ];
+        OrderItem oi = [SELECT Id FROM OrderItem WHERE Id = :b.orderItem.Id];
         update oi;
         Test.stopTest();
 
@@ -466,6 +456,9 @@ private class CustomerOrderLineServiceTest {
 
     // =====================================================================
     //  SECTION 6 — Edge cases
+    //
+    //  These use the @testSetup OI directly. The trigger's @future already
+    //  created a COL for it, so we account for that in assertions.
     // =====================================================================
 
     @IsTest
@@ -482,7 +475,9 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void afterDelete_noCOLsFound_doesNotThrow() {
+        // Use a fresh OI with its COL deleted so the delete path finds nothing
         OrderItem oi = getTestOI();
+        delete [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
 
         Test.startTest();
         CustomerOrderLineService.run(
@@ -496,10 +491,14 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void createCOLsAsync_allExisting_skipsInsert() {
+        // The @testSetup trigger already created a COL — verify it's there
         OrderItem oi = getTestOI();
-        // Pre-create a COL so the idempotency check skips the insert
-        insert CustomerOrderLineService.buildCOL(oi);
+        Integer countBefore = [
+            SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id
+        ];
+        System.assert(countBefore >= 1, 'COL should already exist from @testSetup trigger');
 
+        // Call AFTER_INSERT again — the idempotency check should skip the insert
         Test.startTest();
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_INSERT,
@@ -507,13 +506,18 @@ private class CustomerOrderLineServiceTest {
         );
         Test.stopTest();
 
-        Integer count = [SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
-        System.assertEquals(1, count, 'Should not create a duplicate');
+        Integer countAfter = [
+            SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id
+        ];
+        System.assertEquals(countBefore, countAfter, 'Should not create a duplicate');
     }
 
     @IsTest
     static void updateCOLsAsync_noCOL_skipsUpdate() {
+        // Remove the COL created by @testSetup trigger so the update path
+        // hits the "no COL found" continue branch
         OrderItem oi = getTestOI();
+        delete [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
 
         Test.startTest();
         CustomerOrderLineService.run(
@@ -530,12 +534,12 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void updateCOLsAsync_noChanges_doesNotUpdate() {
+        // The @testSetup trigger already created a COL that matches the OI
         OrderItem oi = getTestOI();
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-        insert col;
 
         DateTime syncedBefore = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c WHERE Id = :col.Id
+            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
+            WHERE  OrderItem__c = :oi.Id LIMIT 1
         ].Last_Synced_Date__c;
 
         Test.startTest();
@@ -548,7 +552,8 @@ private class CustomerOrderLineServiceTest {
         Test.stopTest();
 
         DateTime syncedAfter = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c WHERE Id = :col.Id
+            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
+            WHERE  OrderItem__c = :oi.Id LIMIT 1
         ].Last_Synced_Date__c;
 
         System.assertEquals(syncedBefore, syncedAfter);
