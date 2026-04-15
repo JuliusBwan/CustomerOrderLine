@@ -20,9 +20,6 @@
  *
  * AFTER_DELETE is synchronous — assertions can be made immediately after
  * Test.stopTest() as well, but for consistency they follow the same pattern.
- *
- * This test class uses CustomerOrderLineTestDataFactory to avoid repeating
- * the Account → Product → Pricebook → Order → OrderItem setup in every method.
  */
 @isTest
 private class CustomerOrderLineHandlerTest {
@@ -31,8 +28,8 @@ private class CustomerOrderLineHandlerTest {
 
     @isTest
     static void afterInsert_createsOneCOLPerOrderItem() {
-        CustomerOrderLineTestDataFactory.OrderBundle b =
-            CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
         // The insert already happened inside the factory (trigger has fired).
         // Drive the @future to completion.
@@ -53,13 +50,12 @@ private class CustomerOrderLineHandlerTest {
 
     @isTest
     static void afterInsert_idempotent_doesNotCreateDuplicateCOL() {
-        // Pre-create a COL so the trigger's idempotency check is exercised
-        CustomerOrderLineTestDataFactory.OrderBundle b =
-            CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
         // Manually insert a COL before the future runs — simulates a race condition
         // or a record already created by an earlier batch run
-        CustomerOrderLineTestDataFactory.createColLinkedTo(b.orderItem, null);
+        CPQ_TestDataFactory.createCOL(b.orderItem);
 
         Test.startTest();
         Test.stopTest();
@@ -78,8 +74,8 @@ private class CustomerOrderLineHandlerTest {
 
     @isTest
     static void afterUpdate_updatesQuantityOnCOL() {
-        CustomerOrderLineTestDataFactory.OrderBundle b =
-            CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
         // Let the insert future settle so the COL exists before we update
         Test.startTest();
@@ -104,8 +100,8 @@ private class CustomerOrderLineHandlerTest {
 
     @isTest
     static void afterUpdate_noChange_doesNotAlterLastSyncedDate() {
-        CustomerOrderLineTestDataFactory.OrderBundle b =
-            CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
         Test.startTest();
         Test.stopTest(); // settle insert future — COL now exists
@@ -138,8 +134,8 @@ private class CustomerOrderLineHandlerTest {
 
     @isTest
     static void afterDelete_tagsCOLWithDelPrefix() {
-        CustomerOrderLineTestDataFactory.OrderBundle b =
-            CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
         // Ensure the COL exists before we delete the OrderItem
         Test.startTest();
@@ -167,8 +163,8 @@ private class CustomerOrderLineHandlerTest {
 
     @isTest
     static void afterDelete_alreadyTaggedCOL_noDoubleTag() {
-        CustomerOrderLineTestDataFactory.OrderBundle b =
-            CustomerOrderLineTestDataFactory.createOrderWithItem();
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
         Test.startTest();
         Test.stopTest(); // settle insert
