@@ -5,41 +5,41 @@
  * Email delivery cannot be verified in unit tests (Salesforce does not expose
  * sent emails in Apex assertions), so we confirm:
  *  - handleResults() does NOT throw when there are zero failures.
- *  - handleResults() does NOT throw when there are failures (email path executes).
+ *  - handleResults() does NOT throw when there are failures (email path runs).
  *  - sendSummaryEmail() does NOT throw.
  *
  * We rely on the fact that Messaging.sendEmail() is a no-op in test context
- * (emails are not actually sent). Tests that verify the body/subject content
- * would require a mock — acceptable scope for a unit test suite.
+ * (emails are not actually sent).
  */
 @isTest
 private class NotificationServiceTest {
 
-    // ── handleResults — no failures ───────────────────────────────────────────
+    // ── handleResults — no failures ──────────────────────────────────────
 
     @isTest
     static void handleResults_allSuccess_noEmailSent_noException() {
-        // Build fake successful SaveResults using a real insert so we get valid results
-        Account acc = new Account(Name = 'Test');
-        insert acc;
-        Database.SaveResult[] results = Database.insert(new List<Account>{ new Account(Name = 'X') }, false);
+        // Build a valid SaveResult by inserting a real record
+        Database.SaveResult[] results = Database.insert(
+            new List<Account>{ new Account(Name = 'Success Test') },
+            false
+        );
 
         Test.startTest();
         // Should complete silently — no failures, nothing to email
         NotificationService.handleResults('Test Op', 1, results);
         Test.stopTest();
-        // No assertion needed — absence of exception is the pass condition
+
         System.assert(true, 'handleResults with all-success should not throw');
     }
 
-    // ── handleResults — with failures ─────────────────────────────────────────
+    // ── handleResults — with failures ────────────────────────────────────
 
     @isTest
     static void handleResults_withFailures_executesWithoutException() {
-        // Force a SaveResult failure by inserting an Account without a required field.
-        // We use allOrNone=false so we get a result object rather than an exception.
+        // Force a SaveResult failure by inserting an Account without Name.
+        // allOrNone=false gives us a result object rather than an exception.
         Database.SaveResult[] results = Database.insert(
-            new List<Account>{ new Account() }, // Name is required — will fail
+            new List<Account>{ new Account() },
             false
         );
 
@@ -47,16 +47,17 @@ private class NotificationServiceTest {
         NotificationService.handleResults('Test Failure Op', 1, results);
         Test.stopTest();
 
-        System.assert(results[0].isSuccess() == false, 'SaveResult should have failed');
+        System.assert(!results[0].isSuccess(), 'SaveResult should have failed');
     }
 
-    // ── sendSummaryEmail ──────────────────────────────────────────────────────
+    // ── sendSummaryEmail ─────────────────────────────────────────────────
 
     @isTest
     static void sendSummaryEmail_doesNotThrow() {
         Test.startTest();
         NotificationService.sendSummaryEmail('Test Subject', 'Test body text.');
         Test.stopTest();
+
         System.assert(true, 'sendSummaryEmail should not throw');
     }
 }
