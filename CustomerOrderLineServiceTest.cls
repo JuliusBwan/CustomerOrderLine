@@ -1,229 +1,246 @@
 @IsTest
-public class CPQ_TestDataFactory {
+private class CustomerOrderLineServiceTest {
 
     // ─────────────────────────────────────────────
-    // CACHED RECORDS
+    // SHARED TEST DATA
     // ─────────────────────────────────────────────
-    private static Product2 cachedProduct;
-    private static PricebookEntry cachedPBE;
-    private static blng__BillingRule__c cachedBillingRule;
-    private static blng__RevenueRecognitionRule__c cachedRevRecRule;
-    private static blng__TaxRule__c cachedTaxRule;
+
+    @testSetup
+    static void setupData() {
+        // Only create base OrderItem once
+        CPQ_TestDataFactory.createOrderWithItem();
+    }
+
+    private static OrderItem getTestOI() {
+        return [
+            SELECT Id, OrderItemNumber,
+                   Product2.Name,
+                   Order.AccountId,
+                   SBQQ__Contract__c,
+                   SBQQ__Contract__r.ContractNumber,
+                   SBQQ__Contract__r.Status,
+                   Quantity,
+                   TotalPrice,
+                   ServiceDate,
+                   EndDate,
+                   blng__LastChargeToDate__c,
+                   blng__NextBillingDate__c,
+                   SBQQ__DefaultSubscriptionTerm__c
+            FROM OrderItem
+            LIMIT 1
+        ];
+    }
 
     // ─────────────────────────────────────────────
-    // BILLING RULE
+    // SECTION 1 — buildCOL
     // ─────────────────────────────────────────────
-    public static blng__BillingRule__c getBillingRule() {
-        if (cachedBillingRule == null) {
-            cachedBillingRule = new blng__BillingRule__c(
-                Name = 'Sample Billing Rule',
-                blng__Active__c = true,
-                blng__GenerateInvoices__c = 'No',
-                blng__InitialBillingTrigger__c = 'Order Product Activation Date'
+
+    @IsTest
+    static void buildCOL_mapsFieldsCorrectly() {
+        OrderItem oi = getTestOI();
+
+        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
+
+        System.assertEquals(oi.Id, col.OrderItem__c);
+        System.assertEquals(oi.Quantity, col.Quantity__c);
+        System.assertEquals(oi.TotalPrice, col.Total_Price__c);
+        System.assertEquals(oi.EndDate, col.End_Date__c);
+        System.assertEquals(oi.ServiceDate, col.Service_Date__c);
+    }
+
+    // ─────────────────────────────────────────────
+    // SECTION 2 — applyChanges
+    // ─────────────────────────────────────────────
+
+    @IsTest
+    static void applyChanges_quantityChanged_returnsTrue() {
+        OrderItem oldOI = getTestOI();
+
+        OrderItem newOI = getTestOI();
+        newOI.Quantity = oldOI.Quantity + 1;
+
+        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oldOI);
+
+        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
+
+        System.assertEquals(true, changed);
+        System.assertEquals(newOI.Quantity, col.Quantity__c);
+    }
+
+    @IsTest
+    static void applyChanges_noChange_returnsFalse() {
+        OrderItem oi = getTestOI();
+        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
+
+        Boolean changed = CustomerOrderLineService.applyChanges(col, oi, oi);
+
+        System.assertEquals(false, changed);
+    }
+
+    @IsTest
+    static void applyChanges_endDateChanged_returnsTrue() {
+        OrderItem oldOI = getTestOI();
+        OrderItem newOI = getTestOI();
+        newOI.EndDate = oldOI.EndDate.addDays(10);
+
+        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oldOI);
+
+        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
+
+        System.assertEquals(true, changed);
+        System.assertEquals(newOI.EndDate, col.End_Date__c);
+    }
+
+    // ─────────────────────────────────────────────
+    // SECTION 3 — buildPseudoOld
+    // ─────────────────────────────────────────────
+
+    @IsTest
+    static void buildPseudoOld_reconstructsFields() {
+        OrderItem oi = getTestOI();
+        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
+
+        OrderItem pseudo = CustomerOrderLineService.buildPseudoOld(col);
+
+        System.assertEquals(col.Quantity__c, pseudo.Quantity);
+        System.assertEquals(col.End_Date__c, pseudo.EndDate);
+        System.assertEquals(col.Total_Price__c, pseudo.TotalPrice);
+        System.assertEquals(col.Service_Date__c, pseudo.ServiceDate);
+    }
+
+    // ─────────────────────────────────────────────
+    // SECTION 4 — QUERIES
+    // ─────────────────────────────────────────────
+
+    @IsTest
+    static void getColsByOrderItemIds_returnsMap() {
+        OrderItem oi = getTestOI();
+
+        CPQ_TestDataFactory.createCOL(oi, 'COL-TEST');
+
+        Map<Id, CustomerOrderLine__c> result =
+            CustomerOrderLineService.getColsByOrderItemIds(
+                new Set<Id>{ oi.Id }
             );
-            insert cachedBillingRule;
-        }
-        return cachedBillingRule;
+
+        System.assertEquals(1, result.size());
     }
 
-    // ─────────────────────────────────────────────
-    // REV REC RULE
-    // ─────────────────────────────────────────────
-    public static blng__RevenueRecognitionRule__c getRevRecRule() {
-        if (cachedRevRecRule == null) {
-            cachedRevRecRule = new blng__RevenueRecognitionRule__c(
-                Name = 'Sample Revenue Recognition Rule',
-                blng__Active__c = true,
-                blng__CreateRevenueSchedule__c = 'No'
-            );
-            insert cachedRevRecRule;
-        }
-        return cachedRevRecRule;
-    }
-
-    // ─────────────────────────────────────────────
-    // TAX RULE
-    // ─────────────────────────────────────────────
-    public static blng__TaxRule__c getTaxRule() {
-        if (cachedTaxRule == null) {
-            cachedTaxRule = new blng__TaxRule__c(
-                Name = 'Sample Tax Rule',
-                blng__Active__c = true,
-                blng__TaxableYesNo__c = 'Yes'
-            );
-            insert cachedTaxRule;
-        }
-        return cachedTaxRule;
-    }
-
-    // ─────────────────────────────────────────────
-    // PRODUCT (SOURCE OF TRUTH)
-    // ─────────────────────────────────────────────
-    public static Product2 getProduct() {
-        String unique = String.valueOf(DateTime.now().getTime());
-        
-        if (cachedProduct == null) {
-
-            cachedProduct = new Product2(
-                Name = 'Test Product ' + unique,
-                ProductCode = 'TEST-PROD-' + unique,
-                IsActive = true,
-                CurrencyIsoCode = 'GBP',
-
-                SBQQ__ChargeType__c = 'Recurring',
-                SBQQ__BillingType__c = 'Advance',
-                SBQQ__BillingFrequency__c = 'Annual',
-                SBQQ__SubscriptionType__c = 'Renewable',
-                SBQQ__SubscriptionPricing__c = 'Fixed Price',
-                SBQQ__SubscriptionTerm__c = 12,
-                SBQQ__PricingMethod__c = 'List',
-                SBQQ__DefaultQuantity__c = 1,
-                SBQQ__Component__c = true,
-                SBQQ__AssetConversion__c = 'One per quote line',
-
-                // ✅ ALL BILLING LOGIC MOVED HERE
-                blng__BillingRule__c = getBillingRule().Id,
-                blng__RevenueRecognitionRule__c = getRevRecRule().Id,
-                blng__TaxRule__c = getTaxRule().Id
-            );
-
-            insert cachedProduct;
-        }
-        return cachedProduct;
-    }
-
-    // ─────────────────────────────────────────────
-    // PRICEBOOK ENTRY
-    // ─────────────────────────────────────────────
-    public static PricebookEntry getStandardPBE() {
-        if (cachedPBE == null) {
-            cachedPBE = new PricebookEntry(
-                Pricebook2Id = Test.getStandardPricebookId(),
-                Product2Id = getProduct().Id,
-                UnitPrice = 100,
-                IsActive = true
-            );
-            insert cachedPBE;
-        }
-        return cachedPBE;
-    }
-
-    // ─────────────────────────────────────────────
-    // LEGAL ENTITY
-    // ─────────────────────────────────────────────
-    public static blng__LegalEntity__c createLegalEntity() {
-        String unique = String.valueOf(System.currentTimeMillis());
-        
-        blng__LegalEntity__c le = new blng__LegalEntity__c(
-            Name = 'Test LE',
-            blng__Active__c = true,
-            BC_Company_Id__c = unique,
-            BC_Company_Name__c = 'Test LE ' + unique,
-            BC_Environment__c = 'Production'
+    @IsTest
+    static void getColsByOrderItemIds_null_returnsEmpty() {
+        System.assertEquals(
+            0,
+            CustomerOrderLineService.getColsByOrderItemIds(null).size()
         );
-        insert le;
-        return le;
     }
 
     // ─────────────────────────────────────────────
-    // ACCOUNT (FIXED FOR DUPLICATE RULES)
+    // SECTION 5 — INTEGRATION (FIXED FOR YOUR ERRORS)
     // ─────────────────────────────────────────────
-    public static Account createAccount() {
 
-        blng__LegalEntity__c le = createLegalEntity();
-        String unique = String.valueOf(DateTime.now().getTime());
+    @IsTest
+    static void integration_afterInsert_createsCOL() {
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
 
-        Account a = new Account(
-            Name = 'Test Account ' + unique,
-            GBG_Billing_Entity__c = le.Id,
-            ShippingStreet = '83 Phoenix Street',
-            ShippingCity = 'Sutton-in-Ashfield',
-            ShippingPostalCode = 'NG17',
-            ShippingCountry = 'United Kingdom',
-            BillingStreet = '83 Phoenix Street',
-            BillingCity = 'Sutton-in-Ashfield',
-            BillingPostalCode = 'NG17',
-            BillingCountry = 'United Kingdom',
-            Correspondence_Address_SameAs_Registered__c = true
+        Test.startTest();
+        Test.stopTest();
+
+        List<CustomerOrderLine__c> cols = [
+            SELECT Id, Name
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :b.orderItem.Id
+        ];
+
+        System.assertEquals(1, cols.size());
+        System.assert(cols[0].Name.startsWith('COL-'));
+    }
+
+    @IsTest
+    static void integration_afterUpdate_updatesQuantity() {
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        Test.startTest();
+
+        // IMPORTANT: requery before update (avoids stale trigger state issues)
+        OrderItem oi = [
+            SELECT Id, Quantity
+            FROM OrderItem
+            WHERE Id = :b.orderItem.Id
+        ];
+
+        oi.Quantity = 77;
+        update oi;
+
+        Test.stopTest();
+
+        CustomerOrderLine__c col = [
+            SELECT Quantity__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :oi.Id
+            LIMIT 1
+        ];
+
+        System.assertEquals(77, col.Quantity__c);
+    }
+
+    @IsTest
+    static void integration_afterUpdate_noChange_doesNotModifySyncDate() {
+        CPQ_TestDataFactory.OrderBundle b =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        CustomerOrderLine__c col = [
+            SELECT Last_Synced_Date__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :b.orderItem.Id
+            LIMIT 1
+        ];
+
+        DateTime before = col.Last_Synced_Date__c;
+
+        Test.startTest();
+        update b.orderItem;
+        Test.stopTest();
+
+        DateTime after = [
+            SELECT Last_Synced_Date__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :b.orderItem.Id
+        ].Last_Synced_Date__c;
+
+        System.assertEquals(before, after);
+    }
+
+    // ─────────────────────────────────────────────
+    // SECTION 6 — EDGE CASES (SAFE)
+    // ─────────────────────────────────────────────
+
+    @IsTest
+    static void run_doesNotThrow() {
+        Test.startTest();
+        CustomerOrderLineService.run(
+            System.TriggerOperation.BEFORE_INSERT,
+            new Map<Id, OrderItem>(),
+            null,
+            null
         );
-
-        insert a;
-        return a;
+        Test.stopTest();
     }
 
-    // ─────────────────────────────────────────────
-    // ORDER BUNDLE
-    // ─────────────────────────────────────────────
-    public class OrderBundle {
-        public Account account;
-        public Product2 product;
-        public PricebookEntry pbe;
-        public Order orderRec;
-        public OrderItem orderItem;
-    }
+    @IsTest
+    static void afterDelete_safeExecution() {
+        OrderItem oi = getTestOI();
 
-    // ─────────────────────────────────────────────
-    // ORDER + ORDER ITEM (STABLE VERSION)
-    // ─────────────────────────────────────────────
-    public static OrderBundle createOrderWithItem() {
-        return createOrderWithItem(2, 100);
-    }
-
-    public static OrderBundle createOrderWithItem(Decimal quantity, Decimal unitPrice) {
-
-        OrderBundle b = new OrderBundle();
-
-        b.account = createAccount();
-        b.product = getProduct();
-        b.pbe = getStandardPBE();
-
-        b.orderRec = new Order(
-            AccountId = b.account.Id,
-            EffectiveDate = Date.today(),
-            Status = 'Draft',
-            Pricebook2Id = Test.getStandardPricebookId(),
-            blng__BillingDayOfMonth__c = '9'
+        Test.startTest();
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_DELETE,
+            null,
+            null,
+            new List<OrderItem>{ oi }
         );
-        insert b.orderRec;
+        Test.stopTest();
 
-        OrderItem oi = new OrderItem(
-        OrderId          = b.orderRec.Id,
-        PricebookEntryId = b.pbe.Id,
-        Quantity         = quantity,
-        UnitPrice        = unitPrice,
-        ServiceDate      = Date.today(),
-        EndDate          = Date.today().addMonths(12),
-        
-        // 🔥 REQUIRED FIELDS (set BEFORE insert)
-        blng__RevenueRecognitionRule__c = getRevRecRule().Id,
-        blng__BillingRule__c            = getBillingRule().Id,
-        blng__TaxRule__c                = getTaxRule().Id
-        );
-        
-        insert oi;
-        b.orderItem = oi;
-        return b;
-    }
-
-    // ─────────────────────────────────────────────
-    // COL HELPERS
-    // ─────────────────────────────────────────────
-    public static CustomerOrderLine__c createCOL(OrderItem oi) {
-        return createCOL(oi, 'COL-' + oi.Id);
-    }
-
-    public static CustomerOrderLine__c createCOL(OrderItem oi, String name) {
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Name = name,
-            OrderItem__c = oi.Id
-        );
-        insert col;
-        return col;
-    }
-
-    public static CustomerOrderLine__c createOrphanCOL(String name) {
-        CustomerOrderLine__c col = new CustomerOrderLine__c(Name = name);
-        insert col;
-        return col;
+        System.assert(true);
     }
 }
