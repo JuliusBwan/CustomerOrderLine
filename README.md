@@ -1,7 +1,5 @@
-Database.DMLOptions dml = new Database.DMLOptions();
-dml.DuplicateRuleHeader.allowSave = true;
-dml.DuplicateRuleHeader.runAsCurrentUser = true;
+System.DmlException: Insert failed. First exception on row 0; first error: FIELD_CUSTOM_VALIDATION_EXCEPTION, Tax Rule must be selected: []
 
-Account a = new Account(...);
-a.setOptions(dml);
-insert a;
+Class.CPQ_TestDataFactory.createOrderWithItem: line 435, column 1
+Class.CPQ_TestDataFactory.createOrderWithItem: line 402, column 1
+Class.CustomerOrderLineServiceTest.setupData: line 29, column 1
