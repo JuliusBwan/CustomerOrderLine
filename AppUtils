@@ -1,0 +1,148 @@
+/*
+ * ============================================================================
+ *  AppUtils — Shared pure utility helpers for the entire org
+ * ============================================================================
+ *
+ *  RULES FOR THIS CLASS
+ *  ────────────────────
+ *  1. No DML.       2. No SOQL.       3. No side-effects.
+ *  Every method is static, deterministic, and trivially unit-testable.
+ *  If your method needs DML or SOQL, put it in a Service or Repository.
+ *  If it sends emails, put it in NotificationService.
+ *
+ *  METHOD SUMMARY
+ *  ──────────────
+ *  isEmpty(s)                   → Returns true if the string is null, empty,
+ *                                 or whitespace-only.
+ *
+ *  truncate(s, maxLen)          → Cuts a string to maxLen characters. Returns
+ *                                 the original if it is already short enough.
+ *
+ *  safeEquals(a, b)             → Null-safe string comparison. Returns true
+ *                                 if both are null.
+ *
+ *  prependDeletedTag(name)      → Adds "[DEL] " to a COL name unless it is
+ *                                 already tagged. Blank input returns "[DEL]".
+ *
+ *  formatColName(orderItem)     → Builds a COL name like "COL-00012345" from
+ *                                 the OrderItem's number, falling back to Id.
+ *
+ *  cleanIdSet(rawIds)           → Removes null values from an Id set. Returns
+ *                                 a new clean set, never null.
+ *
+ *  pluckIds(records, fieldName) → Extracts a Set<Id> from a list of SObjects
+ *                                 using the given Id field name.
+ *
+ *  todayISO()                   → Returns today's date as "YYYY-MM-DD".
+ *
+ *  isDateInRange(d, start, end) → Returns true if d falls within the inclusive
+ *                                 range [start, end]. Null-safe: returns false
+ *                                 if any argument is null.
+ *
+ * ============================================================================
+ */
+public with sharing class AppUtils {
+
+    // ── STRING HELPERS ───────────────────────────────────────────────────────
+
+    /**
+     * Returns true if the string is null, empty, or whitespace-only.
+     */
+    public static Boolean isEmpty(String s) {
+        return String.isBlank(s);
+    }
+
+    /**
+     * Truncates a string to maxLen characters. Returns the original
+     * if it is already short enough or null/blank.
+     */
+    public static String truncate(String s, Integer maxLen) {
+        if (String.isBlank(s) || s.length() <= maxLen) return s;
+        return s.substring(0, maxLen);
+    }
+
+    /**
+     * Null-safe equals for two strings. Returns true if both are null.
+     */
+    public static Boolean safeEquals(String a, String b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        return a.equals(b);
+    }
+
+
+    // ── CUSTOMER ORDER LINE HELPERS ──────────────────────────────────────────
+
+    private static final String DEL_TAG = '[DEL]';
+
+    /**
+     * Prepends "[DEL] " to a COL name unless it is already tagged.
+     * Blank or null input returns the bare "[DEL]" tag.
+     */
+    public static String prependDeletedTag(String originalName) {
+        if (String.isBlank(originalName))      return DEL_TAG;
+        if (originalName.startsWith(DEL_TAG))  return originalName;
+        return DEL_TAG + ' ' + originalName;
+    }
+
+    /**
+     * Builds a deterministic COL name from an OrderItem.
+     * Format: COL-{OrderItemNumber}  (falls back to the record Id).
+     */
+    public static String formatColName(OrderItem o) {
+        String key = (o.OrderItemNumber != null)
+            ? o.OrderItemNumber
+            : String.valueOf(o.Id);
+        return 'COL-' + key;
+    }
+
+
+    // ── COLLECTION HELPERS ───────────────────────────────────────────────────
+
+    /**
+     * Removes null values from an Id set. Returns a new clean set.
+     * Useful before passing Ids into a WHERE … IN :ids query.
+     */
+    public static Set<Id> cleanIdSet(Set<Id> raw) {
+        Set<Id> cleaned = new Set<Id>();
+        if (raw == null) return cleaned;
+        for (Id i : raw) {
+            if (i != null) cleaned.add(i);
+        }
+        return cleaned;
+    }
+
+    /**
+     * Extracts a Set<Id> from a list of SObjects using the given Id field.
+     * Example: pluckIds(orderItems, 'OrderId') returns the parent Order Ids.
+     */
+    public static Set<Id> pluckIds(List<SObject> records, String fieldName) {
+        Set<Id> ids = new Set<Id>();
+        if (records == null) return ids;
+        for (SObject rec : records) {
+            Id val = (Id) rec.get(fieldName);
+            if (val != null) ids.add(val);
+        }
+        return ids;
+    }
+
+
+    // ── DATE / DATETIME HELPERS ──────────────────────────────────────────────
+
+    /**
+     * Returns today's date in ISO format (YYYY-MM-DD).
+     * Handy for log messages and batch job summaries.
+     */
+    public static String todayISO() {
+        return String.valueOf(Date.today());
+    }
+
+    /**
+     * Returns true if the given date falls within the inclusive range
+     * [startDate, endDate]. Returns false if any argument is null.
+     */
+    public static Boolean isDateInRange(Date d, Date startDate, Date endDate) {
+        if (d == null || startDate == null || endDate == null) return false;
+        return d >= startDate && d <= endDate;
+    }
+}
