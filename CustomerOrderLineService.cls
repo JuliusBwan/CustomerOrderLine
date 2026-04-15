@@ -15,20 +15,24 @@
  *     → Maps every relevant OrderItem field onto a new COL record. Public
  *       so the nightly batch can call it without duplicating logic.
  *
+ * applyChanges(col, oldOI, newOI)
+ *     → Diffs old vs new OrderItem onto an existing COL. Returns true when
+ *       at least one field changed. Public so the batch can reuse it.
+ *
+ * buildPseudoOld(col)
+ *     → Reconstructs a fake "before" OrderItem from the COL's stored values.
+ *       Uses JSON.deserialize for read-only fields. Public so the batch
+ *       can reuse it.
+ *
+ * getColsByOrderItemIds(ids)
+ *     → Returns a Map keyed by OrderItem Id for quick lookup. Null Ids
+ *       are silently removed. Public so the batch can look up existing COLs.
+ *
  * getOrphanedCols()
  *     → Returns COLs with no linked OrderItem that haven't been tagged
  *       [DEL] yet. Public so the nightly batch can call it.
  *
  * ── Internal (private) ──
- *
- * applyChanges(col, oldOI, newOI)
- *     → Diffs old vs new OrderItem onto an existing COL. Returns true when
- *       at least one field changed so callers know whether to update.
- *
- * buildPseudoOld(col)
- *     → Reconstructs a fake "before" OrderItem from the COL's stored values.
- *       Uses JSON.deserialize because TotalPrice, OrderItemNumber, and
- *       ContractNumber are read-only fields that can't be set directly.
  *
  * createCOLsAsync(ids)
  *     → @future — re-queries OrderItems and inserts new COLs. Skips any
@@ -45,10 +49,6 @@
  * queryOrderItems(ids)
  *     → Shared SOQL query used by both async methods so the field list is
  *       maintained in one place.
- *
- * getColsByOrderItemIds(ids)
- *     → Returns a Map keyed by OrderItem Id for quick lookup. Null Ids
- *       are silently removed before querying.
  *
  * without sharing — COLs are an internal sync object; sharing rules should
  * not prevent the trigger or batch from reading its own records.
@@ -116,9 +116,9 @@ public without sharing class CustomerOrderLineService {
     /**
      * Diffs old vs new OrderItem onto an existing COL.
      * Returns true when at least one field actually changed.
+     * Public so the batch can reuse it for drift detection.
      */
-    @TestVisible
-    private static Boolean applyChanges(
+    public static Boolean applyChanges(
         CustomerOrderLine__c col, OrderItem oldOI, OrderItem newOI
     ) {
         Boolean changed = false;
@@ -173,15 +173,11 @@ public without sharing class CustomerOrderLineService {
 
     /**
      * Reconstructs a fake "before" OrderItem from the COL's stored values.
-     * Needed because old trigger values are gone by the time the @future runs.
-     *
-     * Uses JSON.deserialize because TotalPrice and OrderItemNumber are
-     * read-only fields on OrderItem, and ContractNumber is an auto-number
-     * on Contract. You cannot set these fields with normal Apex assignment,
-     * but JSON.deserialize bypasses that restriction for in-memory SObjects.
+     * Uses JSON.deserialize because TotalPrice, OrderItemNumber, and
+     * ContractNumber are read-only fields.
+     * Public so the batch can reuse it for drift detection.
      */
-    @TestVisible
-    private static OrderItem buildPseudoOld(CustomerOrderLine__c col) {
+    public static OrderItem buildPseudoOld(CustomerOrderLine__c col) {
         Map<String, Object> fields = new Map<String, Object>{
             'blng__LastChargeToDate__c'        => col.blng_LastChargeToDate__c,
             'blng__NextBillingDate__c'         => col.blng_NextBillingDate__c,
@@ -294,32 +290,14 @@ public without sharing class CustomerOrderLineService {
         );
     }
 
-    // ── PRIVATE QUERIES ──────────────────────────────────────────────────
-
-    /**
-     * Shared OrderItem query used by both async methods so the field list
-     * is maintained in one place.
-     */
-    @TestVisible
-    private static List<OrderItem> queryOrderItems(Set<Id> orderItemIds) {
-        return [
-            SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c,
-                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
-                   Quantity, TotalPrice, ServiceDate, EndDate,
-                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
-                   SBQQ__DefaultSubscriptionTerm__c
-            FROM   OrderItem
-            WHERE  Id IN :orderItemIds
-        ];
-    }
+    // ── PUBLIC QUERIES ───────────────────────────────────────────────────
 
     /**
      * Returns a Map keyed by OrderItem Id for quick COL lookup.
      * Null Ids are silently removed before querying.
+     * Public so the batch class can look up existing COLs.
      */
-    @TestVisible
-    private static Map<Id, CustomerOrderLine__c> getColsByOrderItemIds(Set<Id> ids) {
+    public static Map<Id, CustomerOrderLine__c> getColsByOrderItemIds(Set<Id> ids) {
         Map<Id, CustomerOrderLine__c> result = new Map<Id, CustomerOrderLine__c>();
         Set<Id> cleaned = AppUtils.cleanIdSet(ids);
         if (cleaned.isEmpty()) return result;
@@ -342,6 +320,25 @@ public without sharing class CustomerOrderLineService {
             FROM   CustomerOrderLine__c
             WHERE  OrderItem__c = null
                AND NOT Name LIKE '[DEL]%'
+        ];
+    }
+
+    // ── PRIVATE QUERIES ──────────────────────────────────────────────────
+
+    /**
+     * Shared OrderItem query used by both async methods so the field list
+     * is maintained in one place.
+     */
+    private static List<OrderItem> queryOrderItems(Set<Id> orderItemIds) {
+        return [
+            SELECT Id, OrderItemNumber, Product2.Name,
+                   Order.AccountId, SBQQ__Contract__c,
+                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
+                   Quantity, TotalPrice, ServiceDate, EndDate,
+                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
+                   SBQQ__DefaultSubscriptionTerm__c
+            FROM   OrderItem
+            WHERE  Id IN :orderItemIds
         ];
     }
 }
