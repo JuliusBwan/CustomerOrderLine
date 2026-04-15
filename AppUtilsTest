@@ -1,0 +1,212 @@
+/*
+ * ============================================================================
+ *  AppUtilsTest — Unit tests for AppUtils
+ * ============================================================================
+ *
+ *  Every method in AppUtils is pure (no DML, no SOQL), so these tests need
+ *  no @testSetup, no record inserts, and run very fast.
+ *
+ * ============================================================================
+ */
+@isTest
+private class AppUtilsTest {
+
+    // ── isEmpty ──────────────────────────────────────────────────────────────
+
+    @isTest
+    static void isEmpty_null_returnsTrue() {
+        System.assert(AppUtils.isEmpty(null), 'Null should be empty');
+    }
+
+    @isTest
+    static void isEmpty_blank_returnsTrue() {
+        System.assert(AppUtils.isEmpty('   '), 'Whitespace-only should be empty');
+    }
+
+    @isTest
+    static void isEmpty_nonBlank_returnsFalse() {
+        System.assert(!AppUtils.isEmpty('hello'), 'Non-blank should not be empty');
+    }
+
+    // ── truncate ─────────────────────────────────────────────────────────────
+
+    @isTest
+    static void truncate_shorterThanMax_returnsOriginal() {
+        System.assertEquals('abc', AppUtils.truncate('abc', 10));
+    }
+
+    @isTest
+    static void truncate_longerThanMax_cuts() {
+        System.assertEquals('ab', AppUtils.truncate('abcdef', 2));
+    }
+
+    @isTest
+    static void truncate_null_returnsNull() {
+        System.assertEquals(null, AppUtils.truncate(null, 5));
+    }
+
+    // ── safeEquals ───────────────────────────────────────────────────────────
+
+    @isTest
+    static void safeEquals_bothNull_returnsTrue() {
+        System.assert(AppUtils.safeEquals(null, null));
+    }
+
+    @isTest
+    static void safeEquals_oneNull_returnsFalse() {
+        System.assert(!AppUtils.safeEquals('a', null));
+        System.assert(!AppUtils.safeEquals(null, 'a'));
+    }
+
+    @isTest
+    static void safeEquals_equal_returnsTrue() {
+        System.assert(AppUtils.safeEquals('abc', 'abc'));
+    }
+
+    @isTest
+    static void safeEquals_notEqual_returnsFalse() {
+        System.assert(!AppUtils.safeEquals('abc', 'xyz'));
+    }
+
+    // ── prependDeletedTag ────────────────────────────────────────────────────
+
+    @isTest
+    static void prependDeletedTag_null_returnsBareTag() {
+        System.assertEquals('[DEL]', AppUtils.prependDeletedTag(null));
+    }
+
+    @isTest
+    static void prependDeletedTag_blank_returnsBareTag() {
+        System.assertEquals('[DEL]', AppUtils.prependDeletedTag('   '));
+    }
+
+    @isTest
+    static void prependDeletedTag_alreadyTagged_returnsUnchanged() {
+        String input = '[DEL] COL-12345';
+        System.assertEquals(input, AppUtils.prependDeletedTag(input),
+            'Already-tagged name should not be double-tagged');
+    }
+
+    @isTest
+    static void prependDeletedTag_normal_prependsTag() {
+        System.assertEquals('[DEL] COL-12345', AppUtils.prependDeletedTag('COL-12345'));
+    }
+
+    // ── formatColName ────────────────────────────────────────────────────────
+
+    @isTest
+    static void formatColName_withOrderItemNumber_usesNumber() {
+        OrderItem oi = new OrderItem();
+        oi.OrderItemNumber = '00012345';
+
+        String result = AppUtils.formatColName(oi);
+
+        System.assert(result.startsWith('COL-'), 'Should start with COL-');
+        System.assert(result.contains('00012345'), 'Should contain the OrderItemNumber');
+    }
+
+    @isTest
+    static void formatColName_withoutNumber_fallsBackToId() {
+        OrderItem oi = new OrderItem();
+
+        String result = AppUtils.formatColName(oi);
+        System.assert(result.startsWith('COL-'), 'Should start with COL-');
+    }
+
+    // ── cleanIdSet ───────────────────────────────────────────────────────────
+
+    @isTest
+    static void cleanIdSet_null_returnsEmpty() {
+        Set<Id> result = AppUtils.cleanIdSet(null);
+        System.assertEquals(0, result.size());
+    }
+
+    @isTest
+    static void cleanIdSet_removesNulls() {
+        Id fakeId = '001000000000001AAA';
+        Set<Id> input = new Set<Id>{ fakeId, null };
+
+        Set<Id> result = AppUtils.cleanIdSet(input);
+
+        System.assertEquals(1, result.size(), 'Null should be stripped');
+        System.assert(result.contains(fakeId));
+    }
+
+    @isTest
+    static void cleanIdSet_emptySet_returnsEmpty() {
+        Set<Id> result = AppUtils.cleanIdSet(new Set<Id>());
+        System.assertEquals(0, result.size());
+    }
+
+    // ── pluckIds ─────────────────────────────────────────────────────────────
+
+    @isTest
+    static void pluckIds_extractsFieldValues() {
+        Id fakeAccId = '001000000000001AAA';
+        Order o = new Order(AccountId = fakeAccId);
+
+        Set<Id> result = AppUtils.pluckIds(new List<SObject>{ o }, 'AccountId');
+
+        System.assertEquals(1, result.size());
+        System.assert(result.contains(fakeAccId));
+    }
+
+    @isTest
+    static void pluckIds_null_returnsEmpty() {
+        System.assertEquals(0, AppUtils.pluckIds(null, 'AccountId').size());
+    }
+
+    @isTest
+    static void pluckIds_skipsNullFieldValues() {
+        Order o = new Order();
+        Set<Id> result = AppUtils.pluckIds(new List<SObject>{ o }, 'AccountId');
+        System.assertEquals(0, result.size(), 'Null field values should be skipped');
+    }
+
+    // ── todayISO ─────────────────────────────────────────────────────────────
+
+    @isTest
+    static void todayISO_returnsCorrectFormat() {
+        String result = AppUtils.todayISO();
+        System.assertEquals(10, result.length(), 'ISO date should be 10 characters');
+    }
+
+    // ── isDateInRange ────────────────────────────────────────────────────────
+
+    @isTest
+    static void isDateInRange_inside_returnsTrue() {
+        Date start = Date.newInstance(2025, 1, 1);
+        Date end_  = Date.newInstance(2025, 12, 31);
+        Date test_ = Date.newInstance(2025, 6, 15);
+        System.assert(AppUtils.isDateInRange(test_, start, end_));
+    }
+
+    @isTest
+    static void isDateInRange_onBoundary_returnsTrue() {
+        Date d = Date.newInstance(2025, 1, 1);
+        System.assert(AppUtils.isDateInRange(d, d, d), 'Boundary dates should be inclusive');
+    }
+
+    @isTest
+    static void isDateInRange_outside_returnsFalse() {
+        Date start = Date.newInstance(2025, 1, 1);
+        Date end_  = Date.newInstance(2025, 12, 31);
+        Date test_ = Date.newInstance(2026, 1, 1);
+        System.assert(!AppUtils.isDateInRange(test_, start, end_));
+    }
+
+    @isTest
+    static void isDateInRange_nullDate_returnsFalse() {
+        System.assert(!AppUtils.isDateInRange(null, Date.today(), Date.today()));
+    }
+
+    @isTest
+    static void isDateInRange_nullStart_returnsFalse() {
+        System.assert(!AppUtils.isDateInRange(Date.today(), null, Date.today()));
+    }
+
+    @isTest
+    static void isDateInRange_nullEnd_returnsFalse() {
+        System.assert(!AppUtils.isDateInRange(Date.today(), Date.today(), null));
+    }
+}
