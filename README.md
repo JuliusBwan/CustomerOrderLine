@@ -1,2 +1,4 @@
-line 25, column 42: Dependent class is invalid and needs recompilation:
- Class CustomerOrderLineHandler : Method does not exist or incorrect signature: void handleCreates(Set<Id>) from the type CustomerOrderLineService
+System.DmlException: Insert failed. First exception on row 0; first error: FIELD_CUSTOM_VALIDATION_EXCEPTION, To continue, enter a charge type.: []
+  Class.CPQ_TestDataFactory.createOrderWithItem: line 339, column 1
+Class.CPQ_TestDataFactory.createOrderWithItem: line 309, column 1
+Class.CustomerOrderLineServiceTest.setupData: line 35, column 1
