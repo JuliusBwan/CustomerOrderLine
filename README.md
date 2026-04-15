@@ -1,8 +1,5 @@
-1
-2
-3
-4
-// ─── CustomerOrderLinesTrigger ───────────────────────────────────────────────
+// ─── OrderItemAfterTrigger ────────────────────────────────────────────────────
+// One-liner: routes to the service which handles everything internally.
 trigger OrderItemAfterTrigger on OrderItem (after insert, after update, after delete) {
-    CustomerOrderLineHandler.run(Trigger.newMap, Trigger.oldMap, Trigger.OLD);
+    CustomerOrderLineService.run(Trigger.operationType, Trigger.newMap, Trigger.oldMap, Trigger.old);
 }
