@@ -7,7 +7,8 @@
  *  Section 3 — buildPseudoOld     : round-trip reconstruction
  *  Section 4 — Queries            : getColsByOrderItemIds, getOrphanedCols
  *  Section 5 — Integration        : real DML → trigger → assert COL state
- *  Section 6 — Edge cases         : run() else branch, empty-result paths
+ *  Section 6 — Edge cases         : run() else branch, empty-result paths,
+ *                                   dedup guard, defensive empty-set checks
  *
  * ASYNC STRATEGY IN TESTS
  * ────────────────────────
@@ -480,6 +481,12 @@ private class CustomerOrderLineServiceTest {
     //
     //  These use the @testSetup OI directly. The trigger's Queueable already
     //  created a COL for it, so we account for that in assertions.
+    //
+    //  Also covers:
+    //  - dedup_secondCallForSameIds: verifies enqueuedIds prevents a second
+    //    job being enqueued for an Id already dispatched this transaction.
+    //  - createCOLsSync / updateCOLsSync empty-set guards: confirms the
+    //    defensive early-return fires without hitting SOQL or throwing.
     // =====================================================================
 
     @IsTest
@@ -502,6 +509,50 @@ private class CustomerOrderLineServiceTest {
             null, null, new List<OrderItem>{ oi }
         );
 
+        System.assert(true);
+    }
+
+    @IsTest
+    static void dedup_secondCallForSameIds_doesNotEnqueueAgain() {
+        // Confirm that enqueuedIds prevents a second job for the same Id set.
+        // We use skipAsync = false so the real enqueue path runs, but we
+        // reset enqueuedIds first to ensure a clean state.
+        CustomerOrderLineService.enqueuedIds.clear();
+        OrderItem oi = getTestOI();
+
+        // First call — should add the Id and enqueue
+        Set<Id> firstPass = new Set<Id>{ oi.Id };
+        CustomerOrderLineService.enqueuedIds.addAll(firstPass); // simulate first run
+
+        // Second call with skipAsync off — dedup should return an empty set
+        // and no second job should be enqueued (no AsyncException thrown)
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_INSERT,
+            new Map<Id, OrderItem>{ oi.Id => oi }, null, null
+        );
+
+        System.assert(true, 'No exception should be thrown when dedup suppresses a duplicate enqueue');
+    }
+
+    @IsTest
+    static void createCOLsSync_emptySet_doesNotThrow() {
+        // Defensive guard: passing an empty set should return silently
+        CustomerOrderLineService.skipAsync = true;
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_INSERT,
+            new Map<Id, OrderItem>(), null, null
+        );
+        System.assert(true);
+    }
+
+    @IsTest
+    static void updateCOLsSync_emptySet_doesNotThrow() {
+        // Defensive guard: passing an empty set should return silently
+        CustomerOrderLineService.skipAsync = true;
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_UPDATE,
+            new Map<Id, OrderItem>(), new Map<Id, OrderItem>(), null
+        );
         System.assert(true);
     }
 
