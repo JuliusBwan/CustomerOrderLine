@@ -13,6 +13,15 @@
  * including from within another Queueable or batch — which avoids the
  * System.AsyncException that @future methods throw when chained.
  *
+ * DEDUPLICATION GUARD
+ * ───────────────────
+ * enqueuedIds tracks every OrderItem Id for which a job has already been
+ * enqueued within the current transaction. If the trigger fires multiple
+ * times in one transaction (e.g. a bulk DML that Salesforce chunks), the
+ * guard prevents duplicate jobs from being dispatched for the same Id.
+ * The set is transaction-scoped (static) and resets automatically between
+ * requests.
+ *
  * TEST BYPASS
  * ───────────
  * Set CustomerOrderLineService.skipAsync = true in a test to run the
@@ -52,11 +61,15 @@
  * createCOLsSync(ids)
  *     → Synchronous core logic — re-queries OrderItems and inserts new COLs.
  *       Skips any OrderItem that already has a COL (idempotent safety net).
+ *       Guards against null/empty input before touching SOQL.
  *       Called by CreateCOLsJob.execute() and directly when skipAsync = true.
  *
  * updateCOLsSync(ids)
  *     → Synchronous core logic — re-queries OrderItems, diffs them against
  *       the COL's stored values, and updates only the fields that changed.
+ *       Iterates existingByOI.keySet() so only Ids with both a COL and a
+ *       fresh OrderItem are processed — no double containsKey guards needed.
+ *       Guards against null/empty input before touching SOQL.
  *       Called by UpdateCOLsJob.execute() and directly when skipAsync = true.
  *
  * handleDeletedOrderItems(deletedList)
@@ -87,6 +100,14 @@ public without sharing class CustomerOrderLineService {
     @TestVisible
     private static Boolean skipAsync = false;
 
+    // ── DEDUPLICATION GUARD ──────────────────────────────────────────────
+    // Tracks OrderItem Ids for which a job has already been enqueued in
+    // this transaction. Prevents duplicate jobs when the trigger fires
+    // more than once in the same request (e.g. chunked bulk DML).
+    // Resets automatically at the end of every transaction.
+    @TestVisible
+    private static Set<Id> enqueuedIds = new Set<Id>();
+
     // ── COL QUERY FIELD LIST ─────────────────────────────────────────────
     // One field list so every query stays in sync automatically.
     private static final String COL_BASE_FIELDS =
@@ -106,6 +127,9 @@ public without sharing class CustomerOrderLineService {
      * Insert and update operations are dispatched asynchronously via
      * Queueable jobs unless skipAsync = true, in which case the
      * synchronous helpers are called directly (test use only).
+     *
+     * Before enqueuing, each Id is checked against enqueuedIds to ensure
+     * only one job is dispatched per OrderItem per transaction.
      */
     public static void run(
         System.TriggerOperation op,
@@ -118,14 +142,20 @@ public without sharing class CustomerOrderLineService {
                 if (skipAsync) {
                     createCOLsSync(newMap.keySet());
                 } else {
-                    System.enqueueJob(new CreateCOLsJob(newMap.keySet()));
+                    Set<Id> fresh = dedup(newMap.keySet());
+                    if (!fresh.isEmpty()) {
+                        System.enqueueJob(new CreateCOLsJob(fresh));
+                    }
                 }
             }
             when AFTER_UPDATE {
                 if (skipAsync) {
                     updateCOLsSync(newMap.keySet());
                 } else {
-                    System.enqueueJob(new UpdateCOLsJob(newMap.keySet()));
+                    Set<Id> fresh = dedup(newMap.keySet());
+                    if (!fresh.isEmpty()) {
+                        System.enqueueJob(new UpdateCOLsJob(fresh));
+                    }
                 }
             }
             when AFTER_DELETE { handleDeletedOrderItems(oldList); }
@@ -133,6 +163,21 @@ public without sharing class CustomerOrderLineService {
                 System.debug('CustomerOrderLineService: unhandled operation — ' + op);
             }
         }
+    }
+
+    /**
+     * Returns the subset of ids not yet registered in enqueuedIds, then
+     * adds them. Callers receive only the Ids that need a new job.
+     */
+    private static Set<Id> dedup(Set<Id> ids) {
+        Set<Id> fresh = new Set<Id>();
+        for (Id i : ids) {
+            if (!enqueuedIds.contains(i)) {
+                fresh.add(i);
+                enqueuedIds.add(i);
+            }
+        }
+        return fresh;
     }
 
     // ── BUILD / DIFF HELPERS ─────────────────────────────────────────────
@@ -277,10 +322,12 @@ public without sharing class CustomerOrderLineService {
     /**
      * Re-queries OrderItems, builds COLs, and inserts them.
      * Skips any OrderItem that already has a COL (idempotent).
+     * Guards against null or empty input before issuing any SOQL.
      * Called by CreateCOLsJob.execute() in production and directly
      * when skipAsync = true in tests.
      */
     private static void createCOLsSync(Set<Id> orderItemIds) {
+        if (orderItemIds == null || orderItemIds.isEmpty()) return;
         List<OrderItem> items = queryOrderItems(orderItemIds);
 
         Map<Id, CustomerOrderLine__c> existing = getColsByOrderItemIds(orderItemIds);
@@ -305,10 +352,15 @@ public without sharing class CustomerOrderLineService {
     /**
      * Re-queries current OrderItem values, diffs them against COL stored
      * values (the "pseudo-old"), and updates only the COLs that changed.
+     * Iterates existingByOI.keySet() so only Ids that have both a COL and
+     * a fresh OrderItem are processed — no redundant containsKey guards.
+     * Guards against null or empty input before issuing any SOQL.
      * Called by UpdateCOLsJob.execute() in production and directly
      * when skipAsync = true in tests.
      */
     private static void updateCOLsSync(Set<Id> orderItemIds) {
+        if (orderItemIds == null || orderItemIds.isEmpty()) return;
+
         Map<Id, OrderItem> freshItems = new Map<Id, OrderItem>(
             queryOrderItems(orderItemIds)
         );
@@ -317,16 +369,14 @@ public without sharing class CustomerOrderLineService {
 
         List<CustomerOrderLine__c> toUpdate = new List<CustomerOrderLine__c>();
 
-        for (Id oiId : orderItemIds) {
-            if (!existingByOI.containsKey(oiId)) continue;
-            if (!freshItems.containsKey(oiId))   continue;
+        for (Id oiId : existingByOI.keySet()) {
+            OrderItem freshOI = freshItems.get(oiId);
+            if (freshOI == null) continue;
 
-            CustomerOrderLine__c col   = existingByOI.get(oiId);
-            OrderItem            newOI = freshItems.get(oiId);
+            CustomerOrderLine__c col = existingByOI.get(oiId);
+            OrderItem pseudoOld      = buildPseudoOld(col);
 
-            OrderItem pseudoOld = buildPseudoOld(col);
-
-            if (applyChanges(col, pseudoOld, newOI)) {
+            if (applyChanges(col, pseudoOld, freshOI)) {
                 col.Last_Synced_Date__c = System.now();
                 toUpdate.add(col);
             }
