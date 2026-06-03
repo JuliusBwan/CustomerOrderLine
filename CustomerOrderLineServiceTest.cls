@@ -9,12 +9,35 @@
  *  Section 5 — Integration        : real DML → trigger → assert COL state
  *  Section 6 — Edge cases         : run() else branch, empty-result paths
  *
+ * ASYNC STRATEGY IN TESTS
+ * ────────────────────────
+ * The service dispatches insert and update work via Queueable jobs. In tests
+ * we have two patterns depending on what the test needs:
+ *
+ *  a) skipAsync = true  (Sections 5–6 where we need synchronous assertions)
+ *     Set CustomerOrderLineService.skipAsync = true before the DML that fires
+ *     the trigger. The service calls createCOLsSync / updateCOLsSync directly,
+ *     so the COL is committed in the same transaction and queryable immediately
+ *     after. No Test.startTest() / Test.stopTest() wrapping needed.
+ *
+ *  b) Default (Sections 1–4 — pure unit tests or query-only tests)
+ *     No async dispatch at all. These tests do not fire the trigger path or
+ *     rely on committed COLs from async work.
+ *
+ * WHY NOT @testSetup + Test.startTest()?
+ * ───────────────────────────────────────
+ * @testSetup fires the trigger which enqueues a CreateCOLsJob. If any test
+ * method then enqueues a second job (e.g. for an update) inside
+ * Test.startTest(), Salesforce throws System.AsyncException because a
+ * Queueable cannot be enqueued while another is already pending in the same
+ * test context. Using skipAsync = true avoids the second enqueue entirely.
+ *
  * IMPORTANT — @testSetup creates a COL
  * ─────────────────────────────────────
  * The @testSetup calls createOrderWithItem() which inserts an OrderItem.
- * That fires the trigger, which enqueues createCOLsAsync(). Salesforce
- * executes @future methods during @testSetup, so by the time any test
- * method runs, the @testSetup OrderItem ALREADY HAS a COL.
+ * That fires the trigger, which enqueues CreateCOLsJob. Salesforce executes
+ * Queueable jobs during @testSetup, so by the time any test method runs the
+ * @testSetup OrderItem ALREADY HAS a COL.
  *
  * Tests that need "no COL" must delete it first. Tests that need "exactly
  * one COL" must not insert a second one manually.
@@ -318,18 +341,19 @@ private class CustomerOrderLineServiceTest {
     // =====================================================================
     //  SECTION 5 — Integration (real DML → trigger → assert COL)
     //
-    //  Each method uses ONE Test.startTest()/Test.stopTest() pair.
-    //  Each creates FRESH data via createOrderWithItem() so the
-    //  @future from @testSetup does not interfere.
+    //  skipAsync = true routes the trigger through the synchronous helpers
+    //  so COLs are committed in the same transaction and immediately
+    //  queryable. No Test.startTest() / Test.stopTest() wrapping needed.
+    //
+    //  Each test creates FRESH data via createOrderWithItem() so the
+    //  Queueable job from @testSetup does not interfere.
     // =====================================================================
 
     @IsTest
     static void integration_afterInsert_createsCOL() {
+        CustomerOrderLineService.skipAsync = true;
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
-
-        Test.startTest();
-        Test.stopTest();
 
         List<CustomerOrderLine__c> cols = [
             SELECT Id, Name FROM CustomerOrderLine__c
@@ -342,14 +366,19 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void integration_afterInsert_idempotent_noDuplicate() {
+        CustomerOrderLineService.skipAsync = true;
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
 
-        // Pre-create a COL so the @future idempotency check is exercised
+        // Pre-create a COL so the idempotency check is exercised
         CPQ_TestDataFactory.createCOL(b.orderItem);
 
-        Test.startTest();
-        Test.stopTest();
+        // Trigger AFTER_INSERT again — should detect existing COL and skip
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_INSERT,
+            new Map<Id, OrderItem>{ b.orderItem.Id => b.orderItem },
+            null, null
+        );
 
         Integer count = [
             SELECT COUNT() FROM CustomerOrderLine__c
@@ -360,20 +389,15 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void integration_afterUpdate_updatesQuantity() {
+        CustomerOrderLineService.skipAsync = true;
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
 
-        Test.startTest();
-
-        // Requery before update — avoids stale reference issues
         OrderItem oi = [
-            SELECT Id, Quantity FROM OrderItem
-            WHERE  Id = :b.orderItem.Id
+            SELECT Id, Quantity FROM OrderItem WHERE Id = :b.orderItem.Id
         ];
         oi.Quantity = 77;
         update oi;
-
-        Test.stopTest();
 
         CustomerOrderLine__c col = [
             SELECT Quantity__c FROM CustomerOrderLine__c
@@ -385,6 +409,7 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void integration_afterUpdate_noChange_doesNotModifySyncDate() {
+        CustomerOrderLineService.skipAsync = true;
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
 
@@ -396,11 +421,9 @@ private class CustomerOrderLineServiceTest {
             WHERE  Id = :preCOL.Id
         ].Last_Synced_Date__c;
 
-        Test.startTest();
-        // Requery and re-save with no changes
+        // Re-save the OrderItem with no field changes
         OrderItem oi = [SELECT Id FROM OrderItem WHERE Id = :b.orderItem.Id];
         update oi;
-        Test.stopTest();
 
         DateTime syncedAfter = [
             SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
@@ -413,15 +436,14 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void integration_afterDelete_tagsCOL() {
+        CustomerOrderLineService.skipAsync = true;
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
 
         // Manually create a COL before deleting the OrderItem
         CustomerOrderLine__c col = CPQ_TestDataFactory.createCOL(b.orderItem);
 
-        Test.startTest();
         delete b.orderItem;
-        Test.stopTest();
 
         CustomerOrderLine__c tagged = [
             SELECT Name, Last_Synced_Date__c
@@ -434,6 +456,7 @@ private class CustomerOrderLineServiceTest {
 
     @IsTest
     static void integration_afterDelete_alreadyTagged_noDoubleTag() {
+        CustomerOrderLineService.skipAsync = true;
         CPQ_TestDataFactory.OrderBundle b =
             CPQ_TestDataFactory.createOrderWithItem();
 
@@ -442,9 +465,7 @@ private class CustomerOrderLineServiceTest {
             b.orderItem, '[DEL] COL-PreTagged'
         );
 
-        Test.startTest();
         delete b.orderItem;
-        Test.stopTest();
 
         CustomerOrderLine__c checked = [
             SELECT Name FROM CustomerOrderLine__c WHERE Id = :col.Id
@@ -457,34 +478,29 @@ private class CustomerOrderLineServiceTest {
     // =====================================================================
     //  SECTION 6 — Edge cases
     //
-    //  These use the @testSetup OI directly. The trigger's @future already
+    //  These use the @testSetup OI directly. The trigger's Queueable already
     //  created a COL for it, so we account for that in assertions.
     // =====================================================================
 
     @IsTest
     static void run_unhandledOperation_doesNotThrow() {
-        Test.startTest();
         CustomerOrderLineService.run(
             System.TriggerOperation.BEFORE_INSERT,
             new Map<Id, OrderItem>(), null, null
         );
-        Test.stopTest();
-
         System.assert(true);
     }
 
     @IsTest
     static void afterDelete_noCOLsFound_doesNotThrow() {
-        // Use a fresh OI with its COL deleted so the delete path finds nothing
+        // Delete the COL so the delete path finds nothing to tag
         OrderItem oi = getTestOI();
         delete [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
 
-        Test.startTest();
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_DELETE,
             null, null, new List<OrderItem>{ oi }
         );
-        Test.stopTest();
 
         System.assert(true);
     }
@@ -498,13 +514,12 @@ private class CustomerOrderLineServiceTest {
         ];
         System.assert(countBefore >= 1, 'COL should already exist from @testSetup trigger');
 
-        // Call AFTER_INSERT again — the idempotency check should skip the insert
-        Test.startTest();
+        // Call AFTER_INSERT again with skipAsync — idempotency check should skip insert
+        CustomerOrderLineService.skipAsync = true;
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_INSERT,
             new Map<Id, OrderItem>{ oi.Id => oi }, null, null
         );
-        Test.stopTest();
 
         Integer countAfter = [
             SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id
@@ -513,27 +528,25 @@ private class CustomerOrderLineServiceTest {
     }
 
     @IsTest
-    static void updateCOLsAsync_noCOL_skipsUpdate() {
-        // Remove the COL created by @testSetup trigger so the update path
-        // hits the "no COL found" continue branch
+    static void updateCOLsSync_noCOL_skipsUpdate() {
+        // Delete the COL so the update path hits the "no COL found" continue branch
         OrderItem oi = getTestOI();
         delete [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
 
-        Test.startTest();
+        CustomerOrderLineService.skipAsync = true;
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_UPDATE,
             new Map<Id, OrderItem>{ oi.Id => oi },
             new Map<Id, OrderItem>{ oi.Id => oi },
             null
         );
-        Test.stopTest();
 
         Integer count = [SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
         System.assertEquals(0, count);
     }
 
     @IsTest
-    static void updateCOLsAsync_noChanges_doesNotUpdate() {
+    static void updateCOLsSync_noChanges_doesNotUpdateSyncDate() {
         // The @testSetup trigger already created a COL that matches the OI
         OrderItem oi = getTestOI();
 
@@ -542,14 +555,13 @@ private class CustomerOrderLineServiceTest {
             WHERE  OrderItem__c = :oi.Id LIMIT 1
         ].Last_Synced_Date__c;
 
-        Test.startTest();
+        CustomerOrderLineService.skipAsync = true;
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_UPDATE,
             new Map<Id, OrderItem>{ oi.Id => oi },
             new Map<Id, OrderItem>{ oi.Id => oi },
             null
         );
-        Test.stopTest();
 
         DateTime syncedAfter = [
             SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
