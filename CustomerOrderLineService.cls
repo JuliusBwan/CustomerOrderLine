@@ -5,6 +5,21 @@
  * Merges the handler, service, and repository into one class.
  * The trigger calls run() and everything else is handled internally.
  *
+ * ASYNC STRATEGY
+ * ──────────────
+ * Insert and update operations are processed asynchronously via inner
+ * Queueable classes (CreateCOLsJob, UpdateCOLsJob) rather than @future
+ * methods. Queueable jobs can be enqueued from any execution context —
+ * including from within another Queueable or batch — which avoids the
+ * System.AsyncException that @future methods throw when chained.
+ *
+ * TEST BYPASS
+ * ───────────
+ * Set CustomerOrderLineService.skipAsync = true in a test to run the
+ * insert/update logic synchronously instead of enqueuing a job. Use this
+ * when @testSetup already enqueues a job and a second async dispatch inside
+ * Test.startTest() would collide with it.
+ *
  * METHOD SUMMARY
  * ──────────────
  * run(op, newMap, oldMap, oldList)
@@ -34,26 +49,43 @@
  *
  * ── Internal (private) ──
  *
- * createCOLsAsync(ids)
- *     → @future — re-queries OrderItems and inserts new COLs. Skips any
- *       OrderItem that already has a COL (idempotent safety net).
+ * createCOLsSync(ids)
+ *     → Synchronous core logic — re-queries OrderItems and inserts new COLs.
+ *       Skips any OrderItem that already has a COL (idempotent safety net).
+ *       Called by CreateCOLsJob.execute() and directly when skipAsync = true.
  *
- * updateCOLsAsync(ids)
- *     → @future — re-queries OrderItems, diffs them against the COL's stored
- *       values, and updates only the fields that changed.
+ * updateCOLsSync(ids)
+ *     → Synchronous core logic — re-queries OrderItems, diffs them against
+ *       the COL's stored values, and updates only the fields that changed.
+ *       Called by UpdateCOLsJob.execute() and directly when skipAsync = true.
  *
  * handleDeletedOrderItems(deletedList)
  *     → Synchronous — tags COLs with [DEL] prefix. Must be sync because
  *       OrderItem Ids become unqueryable after the transaction commits.
  *
  * queryOrderItems(ids)
- *     → Shared SOQL query used by both async methods so the field list is
+ *     → Shared SOQL query used by both sync methods so the field list is
  *       maintained in one place.
+ *
+ * ── Inner Queueable classes ──
+ *
+ * CreateCOLsJob
+ *     → Wraps createCOLsSync(). Enqueued by run() on AFTER_INSERT.
+ *
+ * UpdateCOLsJob
+ *     → Wraps updateCOLsSync(). Enqueued by run() on AFTER_UPDATE.
  *
  * without sharing — COLs are an internal sync object; sharing rules should
  * not prevent the trigger or batch from reading its own records.
  */
 public without sharing class CustomerOrderLineService {
+
+    // ── TEST BYPASS FLAG ─────────────────────────────────────────────────
+    // Set to true in a test to skip enqueuing and run synchronously instead.
+    // Prevents System.AsyncException when a second job would be enqueued
+    // inside a context that already has an async job in flight.
+    @TestVisible
+    private static Boolean skipAsync = false;
 
     // ── COL QUERY FIELD LIST ─────────────────────────────────────────────
     // One field list so every query stays in sync automatically.
@@ -70,6 +102,10 @@ public without sharing class CustomerOrderLineService {
      * Called by the OrderItem trigger. Routes each operation to the
      * correct handler. Accepts the operation type as a parameter so
      * the method is testable without a real trigger context.
+     *
+     * Insert and update operations are dispatched asynchronously via
+     * Queueable jobs unless skipAsync = true, in which case the
+     * synchronous helpers are called directly (test use only).
      */
     public static void run(
         System.TriggerOperation op,
@@ -78,8 +114,20 @@ public without sharing class CustomerOrderLineService {
         List<OrderItem>    oldList
     ) {
         switch on op {
-            when AFTER_INSERT { createCOLsAsync(newMap.keySet()); }
-            when AFTER_UPDATE { updateCOLsAsync(newMap.keySet()); }
+            when AFTER_INSERT {
+                if (skipAsync) {
+                    createCOLsSync(newMap.keySet());
+                } else {
+                    System.enqueueJob(new CreateCOLsJob(newMap.keySet()));
+                }
+            }
+            when AFTER_UPDATE {
+                if (skipAsync) {
+                    updateCOLsSync(newMap.keySet());
+                } else {
+                    System.enqueueJob(new UpdateCOLsJob(newMap.keySet()));
+                }
+            }
             when AFTER_DELETE { handleDeletedOrderItems(oldList); }
             when else {
                 System.debug('CustomerOrderLineService: unhandled operation — ' + op);
@@ -174,7 +222,7 @@ public without sharing class CustomerOrderLineService {
     /**
      * Reconstructs a fake "before" OrderItem from the COL's stored values.
      * Uses JSON.deserialize because TotalPrice, OrderItemNumber, and
-     * ContractNumber are read-only fields.
+     * ContractNumber are read-only fields that cannot be set directly.
      * Public so the batch can reuse it for drift detection.
      */
     public static OrderItem buildPseudoOld(CustomerOrderLine__c col) {
@@ -198,14 +246,41 @@ public without sharing class CustomerOrderLineService {
         return (OrderItem) JSON.deserialize(JSON.serialize(fields), OrderItem.class);
     }
 
-    // ── AFTER INSERT (async) ─────────────────────────────────────────────
+    // ── INNER QUEUEABLE CLASSES ──────────────────────────────────────────
+
+    /**
+     * Enqueued by run() on AFTER_INSERT.
+     * Delegates to createCOLsSync() so the insert logic lives in one place.
+     */
+    public class CreateCOLsJob implements Queueable {
+        private Set<Id> orderItemIds;
+        public CreateCOLsJob(Set<Id> ids) { this.orderItemIds = ids; }
+        public void execute(QueueableContext ctx) {
+            createCOLsSync(orderItemIds);
+        }
+    }
+
+    /**
+     * Enqueued by run() on AFTER_UPDATE.
+     * Delegates to updateCOLsSync() so the update logic lives in one place.
+     */
+    public class UpdateCOLsJob implements Queueable {
+        private Set<Id> orderItemIds;
+        public UpdateCOLsJob(Set<Id> ids) { this.orderItemIds = ids; }
+        public void execute(QueueableContext ctx) {
+            updateCOLsSync(orderItemIds);
+        }
+    }
+
+    // ── AFTER INSERT (sync core) ─────────────────────────────────────────
 
     /**
      * Re-queries OrderItems, builds COLs, and inserts them.
      * Skips any OrderItem that already has a COL (idempotent).
+     * Called by CreateCOLsJob.execute() in production and directly
+     * when skipAsync = true in tests.
      */
-    @future
-    private static void createCOLsAsync(Set<Id> orderItemIds) {
+    private static void createCOLsSync(Set<Id> orderItemIds) {
         List<OrderItem> items = queryOrderItems(orderItemIds);
 
         Map<Id, CustomerOrderLine__c> existing = getColsByOrderItemIds(orderItemIds);
@@ -225,14 +300,15 @@ public without sharing class CustomerOrderLineService {
         );
     }
 
-    // ── AFTER UPDATE (async) ─────────────────────────────────────────────
+    // ── AFTER UPDATE (sync core) ─────────────────────────────────────────
 
     /**
      * Re-queries current OrderItem values, diffs them against COL stored
      * values (the "pseudo-old"), and updates only the COLs that changed.
+     * Called by UpdateCOLsJob.execute() in production and directly
+     * when skipAsync = true in tests.
      */
-    @future
-    private static void updateCOLsAsync(Set<Id> orderItemIds) {
+    private static void updateCOLsSync(Set<Id> orderItemIds) {
         Map<Id, OrderItem> freshItems = new Map<Id, OrderItem>(
             queryOrderItems(orderItemIds)
         );
@@ -326,7 +402,7 @@ public without sharing class CustomerOrderLineService {
     // ── PRIVATE QUERIES ──────────────────────────────────────────────────
 
     /**
-     * Shared OrderItem query used by both async methods so the field list
+     * Shared OrderItem query used by both sync methods so the field list
      * is maintained in one place.
      */
     private static List<OrderItem> queryOrderItems(Set<Id> orderItemIds) {
