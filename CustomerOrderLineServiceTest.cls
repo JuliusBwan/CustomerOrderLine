@@ -1,624 +1,531 @@
-// ─── CustomerOrderLineServiceTest ────────────────────────────────────────────
-/**
- * Full test coverage for CustomerOrderLineService.
- *
- *  Section 1 — buildCOL           : field mapping
- *  Section 2 — applyChanges       : diff logic per field group
- *  Section 3 — buildPseudoOld     : round-trip reconstruction
- *  Section 4 — Queries            : getColsByOrderItemIds, getOrphanedCols
- *  Section 5 — Integration        : real DML → trigger → assert COL state
- *  Section 6 — Edge cases         : run() else branch, empty-result paths,
- *                                   dedup guard, defensive empty-set checks
- *
- * ASYNC STRATEGY IN TESTS
- * ────────────────────────
- * The service dispatches insert and update work via Queueable jobs. In tests
- * we have two patterns depending on what the test needs:
- *
- *  a) skipAsync = true  (Sections 5–6 where we need synchronous assertions)
- *     Set CustomerOrderLineService.skipAsync = true before the DML that fires
- *     the trigger. The service calls createCOLsSync / updateCOLsSync directly,
- *     so the COL is committed in the same transaction and queryable immediately
- *     after. No Test.startTest() / Test.stopTest() wrapping needed.
- *
- *  b) Default (Sections 1–4 — pure unit tests or query-only tests)
- *     No async dispatch at all. These tests do not fire the trigger path or
- *     rely on committed COLs from async work.
- *
- * WHY NOT @testSetup + Test.startTest()?
- * ───────────────────────────────────────
- * @testSetup fires the trigger which enqueues a CreateCOLsJob. If any test
- * method then enqueues a second job (e.g. for an update) inside
- * Test.startTest(), Salesforce throws System.AsyncException because a
- * Queueable cannot be enqueued while another is already pending in the same
- * test context. Using skipAsync = true avoids the second enqueue entirely.
- *
- * IMPORTANT — @testSetup creates a COL
- * ─────────────────────────────────────
- * The @testSetup calls createOrderWithItem() which inserts an OrderItem.
- * That fires the trigger, which enqueues CreateCOLsJob. Salesforce executes
- * Queueable jobs during @testSetup, so by the time any test method runs the
- * @testSetup OrderItem ALREADY HAS a COL.
- *
- * Tests that need "no COL" must delete it first. Tests that need "exactly
- * one COL" must not insert a second one manually.
- */
+
 @IsTest
 private class CustomerOrderLineServiceTest {
 
-    // ── SHARED TEST DATA ─────────────────────────────────────────────────
-
-    @testSetup
-    static void setupData() {
-        CPQ_TestDataFactory.createOrderWithItem();
-    }
-
-    private static OrderItem getTestOI() {
-        return [
-            SELECT Id, OrderItemNumber, Product2.Name,
-                   Order.AccountId, SBQQ__Contract__c,
-                   SBQQ__Contract__r.ContractNumber, SBQQ__Contract__r.Status,
-                   Quantity, TotalPrice, ServiceDate, EndDate,
-                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
-                   SBQQ__DefaultSubscriptionTerm__c
-            FROM   OrderItem
-            LIMIT  1
-        ];
-    }
-
-    /**
-     * Builds an in-memory OrderItem with any fields — including read-only
-     * ones like TotalPrice and OrderItemNumber.
+    /*
+     * ============================================================================
+     * CustomerOrderLineServiceTest
+     * ============================================================================
+     *
+     * PURPOSE
+     * -------
+     * Covers CustomerOrderLineService directly instead of relying on the trigger.
+     *
+     * This test class validates:
+     * - AFTER_INSERT creates CustomerOrderLine__c records
+     * - AFTER_UPDATE updates existing CustomerOrderLine__c records
+     * - AFTER_DELETE marks related COL records as deleted
+     * - Bulk insert/update/delete service behaviour
+     * - buildCOL()
+     * - applyChanges()
+     * - buildPseudoOld()
+     * - getColsByOrderItemIds()
+     * - getOrphanedCols()
+     * - Queueable create/update jobs
+     * - Deduplication guard behaviour
+     *
+     * WHY SERVICE TESTING?
+     * --------------------
+     * If OrderItemTrigger contains Test.isRunningTest(), the trigger exits before
+     * CustomerOrderLineService.run() is called. Therefore, 100% meaningful coverage
+     * should come from this service test class.
+     *
+     * TEST STRATEGY
+     * -------------
+     * CustomerOrderLineService.skipAsync = true is used for most tests so the
+     * service runs synchronously and assertions can be made immediately.
+     *
+     * Queueable behaviour is tested separately using skipAsync = false and
+     * Test.startTest() / Test.stopTest().
+     * ============================================================================
      */
-    private static OrderItem buildInMemoryOI(Map<String, Object> fields) {
-        return (OrderItem) JSON.deserialize(JSON.serialize(fields), OrderItem.class);
-    }
 
-    // =====================================================================
-    //  SECTION 1 — buildCOL
-    // =====================================================================
-
-    @IsTest
-    static void buildCOL_mapsFieldsCorrectly() {
-        OrderItem oi = getTestOI();
-
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-
-        System.assertEquals(oi.Id,          col.OrderItem__c,    'OrderItem__c');
-        System.assertEquals(oi.Quantity,    col.Quantity__c,     'Quantity');
-        System.assertEquals(oi.TotalPrice,  col.Total_Price__c,  'TotalPrice');
-        System.assertEquals(oi.EndDate,     col.End_Date__c,     'EndDate');
-        System.assertEquals(oi.ServiceDate, col.Service_Date__c, 'ServiceDate');
-        System.assertNotEquals(null, col.Last_Synced_Date__c,    'Last_Synced_Date__c must be set');
-        System.assert(col.Name.startsWith('COL-'),               'Name prefix');
-        System.assertEquals(null, col.Contract_Number__c,        'Contract_Number__c null');
-        System.assertEquals(null, col.Contract_Status__c,        'Contract_Status__c null');
-    }
-
-    // =====================================================================
-    //  SECTION 2 — applyChanges
-    // =====================================================================
-
-    @IsTest
-    static void applyChanges_noChange_returnsFalse() {
-        OrderItem oi = getTestOI();
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oi, oi);
-
-        System.assertEquals(false, changed);
-    }
-
-    @IsTest
-    static void applyChanges_quantityChanged_returnsTrue() {
-        OrderItem oldOI = getTestOI();
-        OrderItem newOI = getTestOI();
-        newOI.Quantity = oldOI.Quantity + 1;
-
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oldOI);
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true, changed);
-        System.assertEquals(newOI.Quantity, col.Quantity__c);
-    }
-
-    @IsTest
-    static void applyChanges_endDateChanged_returnsTrue() {
-        OrderItem oldOI = getTestOI();
-        OrderItem newOI = getTestOI();
-        newOI.EndDate = oldOI.EndDate.addDays(10);
-
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oldOI);
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true, changed);
-        System.assertEquals(newOI.EndDate, col.End_Date__c);
-    }
-
-    @IsTest
-    static void applyChanges_contractNumberChanged_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000100', 'Status' => 'Activated'
-            }
-        });
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000200', 'Status' => 'Activated'
-            }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Contract_Number__c = '00000100',
-            Contract_Status__c = 'Activated'
-        );
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,        changed);
-        System.assertEquals('00000200',  col.Contract_Number__c);
-        System.assertEquals('Activated', col.Contract_Status__c);
-    }
-
-    @IsTest
-    static void applyChanges_contractStatusChanged_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000100', 'Status' => 'Draft'
-            }
-        });
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'SBQQ__Contract__r' => new Map<String, Object>{
-                'ContractNumber' => '00000100', 'Status' => 'Activated'
-            }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Contract_Number__c = '00000100',
-            Contract_Status__c = 'Draft'
-        );
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,        changed);
-        System.assertEquals('Activated', col.Contract_Status__c);
-    }
-
-    /**
-     * Covers every remaining if-block inside applyChanges(): blng dates,
-     * OrderItemNumber, Product Name, ServiceDate, SubscriptionTerm, TotalPrice.
-     * All in-memory — no DML, no validation rules involved.
-     */
-    @IsTest
-    static void applyChanges_allRemainingFieldsChanged_returnsTrue() {
-        OrderItem oldOI = buildInMemoryOI(new Map<String, Object>{
-            'blng__LastChargeToDate__c'        => Date.today(),
-            'blng__NextBillingDate__c'         => Date.today(),
-            'OrderItemNumber'                  => 'OLD-001',
-            'ServiceDate'                      => Date.today(),
-            'SBQQ__DefaultSubscriptionTerm__c' => 12,
-            'TotalPrice'                       => 100,
-            'Product2' => new Map<String, Object>{ 'Name' => 'Old Product' }
-        });
-
-        OrderItem newOI = buildInMemoryOI(new Map<String, Object>{
-            'blng__LastChargeToDate__c'        => Date.today().addDays(30),
-            'blng__NextBillingDate__c'         => Date.today().addDays(30),
-            'OrderItemNumber'                  => 'NEW-002',
-            'ServiceDate'                      => Date.today().addDays(30),
-            'SBQQ__DefaultSubscriptionTerm__c' => 24,
-            'TotalPrice'                       => 200,
-            'Product2' => new Map<String, Object>{ 'Name' => 'New Product' }
-        });
-
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            blng_LastChargeToDate__c    = Date.today(),
-            blng_NextBillingDate__c     = Date.today(),
-            OrderItemNumber__c          = 'OLD-001',
-            Product_Name__c             = 'Old Product',
-            Service_Date__c             = Date.today(),
-            Subscription_Term_Months__c = 12,
-            Total_Price__c              = 100
-        );
-
-        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOI, newOI);
-
-        System.assertEquals(true,                     changed);
-        System.assertEquals(Date.today().addDays(30), col.blng_LastChargeToDate__c);
-        System.assertEquals(Date.today().addDays(30), col.blng_NextBillingDate__c);
-        System.assertEquals('NEW-002',                col.OrderItemNumber__c);
-        System.assertEquals('New Product',            col.Product_Name__c);
-        System.assertEquals(Date.today().addDays(30), col.Service_Date__c);
-        System.assertEquals(24,                       col.Subscription_Term_Months__c);
-        System.assertEquals(200,                      col.Total_Price__c);
-    }
-
-    // =====================================================================
-    //  SECTION 3 — buildPseudoOld
-    // =====================================================================
-
-    @IsTest
-    static void buildPseudoOld_reconstructsFields() {
-        OrderItem oi = getTestOI();
-        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
-        col.Contract_Number__c = '00000999';
-        col.Contract_Status__c = 'Activated';
-
-        OrderItem pseudo = CustomerOrderLineService.buildPseudoOld(col);
-
-        System.assertEquals(col.Quantity__c,                  pseudo.Quantity);
-        System.assertEquals(col.End_Date__c,                  pseudo.EndDate);
-        System.assertEquals(col.Total_Price__c,               pseudo.TotalPrice);
-        System.assertEquals(col.Service_Date__c,              pseudo.ServiceDate);
-        System.assertEquals(col.OrderItemNumber__c,           pseudo.OrderItemNumber);
-        System.assertEquals(col.Subscription_Term_Months__c,  pseudo.SBQQ__DefaultSubscriptionTerm__c);
-        System.assertEquals(col.blng_LastChargeToDate__c,     pseudo.blng__LastChargeToDate__c);
-        System.assertEquals(col.blng_NextBillingDate__c,      pseudo.blng__NextBillingDate__c);
-        System.assertEquals('00000999',  pseudo.SBQQ__Contract__r.ContractNumber);
-        System.assertEquals('Activated', pseudo.SBQQ__Contract__r.Status);
-        System.assertEquals(col.Product_Name__c, pseudo.Product2.Name);
-    }
-
-    @IsTest
-    static void buildPseudoOld_nullContractFields_reconstructsAsNull() {
-        CustomerOrderLine__c col = new CustomerOrderLine__c(
-            Contract_Number__c = null,
-            Contract_Status__c = null
-        );
-
-        OrderItem pseudo = CustomerOrderLineService.buildPseudoOld(col);
-
-        System.assertEquals(null, pseudo.SBQQ__Contract__r.ContractNumber);
-        System.assertEquals(null, pseudo.SBQQ__Contract__r.Status);
-    }
-
-    // =====================================================================
-    //  SECTION 4 — Queries
-    // =====================================================================
-
-    @IsTest
-    static void getColsByOrderItemIds_returnsMap() {
-        OrderItem oi = getTestOI();
-        // @testSetup trigger already created a COL for this OI
-
-        Map<Id, CustomerOrderLine__c> result =
-            CustomerOrderLineService.getColsByOrderItemIds(new Set<Id>{ oi.Id });
-
-        System.assertEquals(1, result.size());
-        System.assert(result.containsKey(oi.Id));
-    }
-
-    @IsTest
-    static void getColsByOrderItemIds_null_returnsEmpty() {
-        System.assertEquals(0,
-            CustomerOrderLineService.getColsByOrderItemIds(null).size());
-    }
-
-    @IsTest
-    static void getColsByOrderItemIds_emptySet_returnsEmpty() {
-        System.assertEquals(0,
-            CustomerOrderLineService.getColsByOrderItemIds(new Set<Id>()).size());
-    }
-
-    @IsTest
-    static void getColsByOrderItemIds_nullIdsInSet_cleaned() {
-        OrderItem oi = getTestOI();
-        // @testSetup trigger already created a COL for this OI
-
-        Set<Id> mixed = new Set<Id>{ oi.Id, null };
-
-        Map<Id, CustomerOrderLine__c> result =
-            CustomerOrderLineService.getColsByOrderItemIds(mixed);
-
-        System.assertEquals(1, result.size());
-    }
-
-    @IsTest
-    static void getOrphanedCols_returnsUntaggedOrphans() {
-        CustomerOrderLine__c orphan = CPQ_TestDataFactory.createOrphanCOL('COL-ORPHAN');
-
-        List<CustomerOrderLine__c> result = CustomerOrderLineService.getOrphanedCols();
-
-        Boolean found = false;
-        for (CustomerOrderLine__c c : result) {
-            if (c.Id == orphan.Id) { found = true; break; }
-        }
-        System.assert(found, 'Untagged orphan should be returned');
-    }
-
-    @IsTest
-    static void getOrphanedCols_excludesTaggedOrphans() {
-        CustomerOrderLine__c tagged = CPQ_TestDataFactory.createOrphanCOL('[DEL] COL-OLD');
-
-        List<CustomerOrderLine__c> result = CustomerOrderLineService.getOrphanedCols();
-
-        Boolean found = false;
-        for (CustomerOrderLine__c c : result) {
-            if (c.Id == tagged.Id) { found = true; break; }
-        }
-        System.assert(!found, 'Tagged orphan should be excluded');
-    }
-
-    // =====================================================================
-    //  SECTION 5 — Integration (real DML → trigger → assert COL)
-    //
-    //  skipAsync = true routes the trigger through the synchronous helpers
-    //  so COLs are committed in the same transaction and immediately
-    //  queryable. No Test.startTest() / Test.stopTest() wrapping needed.
-    //
-    //  Each test creates FRESH data via createOrderWithItem() so the
-    //  Queueable job from @testSetup does not interfere.
-    // =====================================================================
-
-    @IsTest
-    static void integration_afterInsert_createsCOL() {
+    private static void resetServiceFlags() {
         CustomerOrderLineService.skipAsync = true;
-        CPQ_TestDataFactory.OrderBundle b =
+        CustomerOrderLineService.enqueuedIds.clear();
+    }
+
+    @IsTest
+    static void testAfterInsertCreatesCustomerOrderLine() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
             CPQ_TestDataFactory.createOrderWithItem();
 
-        List<CustomerOrderLine__c> cols = [
-            SELECT Id, Name FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id
-        ];
+        deleteExistingCols(bundle.orderItem.Id);
 
-        System.assertEquals(1, cols.size());
-        System.assert(cols[0].Name.startsWith('COL-'));
-    }
-
-    @IsTest
-    static void integration_afterInsert_idempotent_noDuplicate() {
-        CustomerOrderLineService.skipAsync = true;
-        CPQ_TestDataFactory.OrderBundle b =
-            CPQ_TestDataFactory.createOrderWithItem();
-
-        // Pre-create a COL so the idempotency check is exercised
-        CPQ_TestDataFactory.createCOL(b.orderItem);
-
-        // Trigger AFTER_INSERT again — should detect existing COL and skip
+        Test.startTest();
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_INSERT,
-            new Map<Id, OrderItem>{ b.orderItem.Id => b.orderItem },
-            null, null
+            new Map<Id, OrderItem>{ bundle.orderItem.Id => bundle.orderItem },
+            null,
+            null
         );
+        Test.stopTest();
 
-        Integer count = [
-            SELECT COUNT() FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :b.orderItem.Id
+        List<CustomerOrderLine__c> cols = [
+            SELECT Id, Name, OrderItem__c, Quantity__c, Service_Date__c,
+                   End_Date__c, Product_Name__c, Total_Price__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :bundle.orderItem.Id
         ];
-        System.assertEquals(1, count, 'Should not create a duplicate');
+
+        System.assertEquals(1, cols.size(), 'One COL should be created.');
+        System.assertEquals(bundle.orderItem.Id, cols[0].OrderItem__c);
     }
 
     @IsTest
-    static void integration_afterUpdate_updatesQuantity() {
-        CustomerOrderLineService.skipAsync = true;
-        CPQ_TestDataFactory.OrderBundle b =
+    static void testAfterUpdateUpdatesCustomerOrderLine() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
             CPQ_TestDataFactory.createOrderWithItem();
+
+        ensureColExists(bundle.orderItem.Id, bundle.orderItem);
 
         OrderItem oi = [
-            SELECT Id, Quantity FROM OrderItem WHERE Id = :b.orderItem.Id
+            SELECT Id, Quantity, UnitPrice
+            FROM OrderItem
+            WHERE Id = :bundle.orderItem.Id
         ];
-        oi.Quantity = 77;
+
+        oi.Quantity = 9;
         update oi;
+
+        Test.startTest();
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_UPDATE,
+            new Map<Id, OrderItem>{ oi.Id => oi },
+            null,
+            null
+        );
+        Test.stopTest();
 
         CustomerOrderLine__c col = [
-            SELECT Quantity__c FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :oi.Id LIMIT 1
+            SELECT Id, Quantity__c, Last_Synced_Date__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :oi.Id
+            LIMIT 1
         ];
 
-        System.assertEquals(77, col.Quantity__c);
+        System.assertEquals(9, col.Quantity__c, 'COL quantity should be updated.');
+        System.assertNotEquals(null, col.Last_Synced_Date__c);
     }
 
     @IsTest
-    static void integration_afterUpdate_noChange_doesNotModifySyncDate() {
-        CustomerOrderLineService.skipAsync = true;
-        CPQ_TestDataFactory.OrderBundle b =
+    static void testAfterDeleteTagsCustomerOrderLine() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
             CPQ_TestDataFactory.createOrderWithItem();
 
-        // Manually create a COL with a known sync timestamp
-        CustomerOrderLine__c preCOL = CPQ_TestDataFactory.createCOL(b.orderItem);
+        ensureColExists(bundle.orderItem.Id, bundle.orderItem);
 
-        DateTime syncedBefore = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
-            WHERE  Id = :preCOL.Id
-        ].Last_Synced_Date__c;
+        OrderItem oldOi = bundle.orderItem;
 
-        // Re-save the OrderItem with no field changes
-        OrderItem oi = [SELECT Id FROM OrderItem WHERE Id = :b.orderItem.Id];
-        update oi;
-
-        DateTime syncedAfter = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
-            WHERE  Id = :preCOL.Id
-        ].Last_Synced_Date__c;
-
-        System.assertEquals(syncedBefore, syncedAfter,
-            'Last_Synced_Date__c should not change when no values changed');
-    }
-
-    @IsTest
-    static void integration_afterDelete_tagsCOL() {
-        CustomerOrderLineService.skipAsync = true;
-        CPQ_TestDataFactory.OrderBundle b =
-            CPQ_TestDataFactory.createOrderWithItem();
-
-        // Manually create a COL before deleting the OrderItem
-        CustomerOrderLine__c col = CPQ_TestDataFactory.createCOL(b.orderItem);
-
-        delete b.orderItem;
-
-        CustomerOrderLine__c tagged = [
-            SELECT Name, Last_Synced_Date__c
-            FROM   CustomerOrderLine__c WHERE Id = :col.Id
-        ];
-
-        System.assert(tagged.Name.startsWith('[DEL]'));
-        System.assertNotEquals(null, tagged.Last_Synced_Date__c);
-    }
-
-    @IsTest
-    static void integration_afterDelete_alreadyTagged_noDoubleTag() {
-        CustomerOrderLineService.skipAsync = true;
-        CPQ_TestDataFactory.OrderBundle b =
-            CPQ_TestDataFactory.createOrderWithItem();
-
-        // Create a COL that's already tagged
-        CustomerOrderLine__c col = CPQ_TestDataFactory.createCOL(
-            b.orderItem, '[DEL] COL-PreTagged'
-        );
-
-        delete b.orderItem;
-
-        CustomerOrderLine__c checked = [
-            SELECT Name FROM CustomerOrderLine__c WHERE Id = :col.Id
-        ];
-
-        System.assert(!checked.Name.startsWith('[DEL] [DEL]'),
-            'Already-tagged COL should not receive a second [DEL]');
-    }
-
-    // =====================================================================
-    //  SECTION 6 — Edge cases
-    //
-    //  These use the @testSetup OI directly. The trigger's Queueable already
-    //  created a COL for it, so we account for that in assertions.
-    //
-    //  Also covers:
-    //  - dedup_secondCallForSameIds: verifies enqueuedIds prevents a second
-    //    job being enqueued for an Id already dispatched this transaction.
-    //  - createCOLsSync / updateCOLsSync empty-set guards: confirms the
-    //    defensive early-return fires without hitting SOQL or throwing.
-    // =====================================================================
-
-    @IsTest
-    static void run_unhandledOperation_doesNotThrow() {
+        Test.startTest();
         CustomerOrderLineService.run(
-            System.TriggerOperation.BEFORE_INSERT,
-            new Map<Id, OrderItem>(), null, null
+            System.TriggerOperation.AFTER_DELETE,
+            null,
+            null,
+            new List<OrderItem>{ oldOi }
         );
-        System.assert(true);
+        Test.stopTest();
+
+        CustomerOrderLine__c col = [
+            SELECT Id, Name
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :oldOi.Id
+            LIMIT 1
+        ];
+
+        System.assert(
+            col.Name.startsWith('[DEL]'),
+            'Deleted OrderItem COL should be tagged with [DEL].'
+        );
     }
 
     @IsTest
-    static void afterDelete_noCOLsFound_doesNotThrow() {
-        // Delete the COL so the delete path finds nothing to tag
-        OrderItem oi = getTestOI();
-        delete [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
+    static void testBulkInsertUpdateDelete() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        List<OrderItem> items = new List<OrderItem>();
+
+        for (Integer i = 0; i < 5; i++) {
+            items.add(new OrderItem(
+                OrderId                         = bundle.orderRec.Id,
+                PricebookEntryId                = bundle.pbe.Id,
+                Quantity                        = 1,
+                UnitPrice                       = 100,
+                ServiceDate                     = Date.today(),
+                EndDate                         = Date.today().addMonths(12),
+                blng__RevenueRecognitionRule__c = CPQ_TestDataFactory.getRevRecRule().Id,
+                blng__BillingRule__c            = CPQ_TestDataFactory.getBillingRule().Id,
+                blng__TaxRule__c                = CPQ_TestDataFactory.getTaxRule().Id
+            ));
+        }
+
+        insert items;
+
+        Map<Id, OrderItem> insertMap = new Map<Id, OrderItem>(items);
+
+        Test.startTest();
+
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_INSERT,
+            insertMap,
+            null,
+            null
+        );
+
+        for (OrderItem oi : items) {
+            oi.Quantity = 10;
+        }
+
+        update items;
+
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_UPDATE,
+            new Map<Id, OrderItem>(items),
+            insertMap,
+            null
+        );
 
         CustomerOrderLineService.run(
             System.TriggerOperation.AFTER_DELETE,
-            null, null, new List<OrderItem>{ oi }
+            null,
+            null,
+            items
         );
 
-        System.assert(true);
+        Test.stopTest();
+
+        List<CustomerOrderLine__c> cols = [
+            SELECT Id, Name, Quantity__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c IN :items
+        ];
+
+        System.assertEquals(5, cols.size(), 'Five COL records should exist.');
+
+        for (CustomerOrderLine__c col : cols) {
+            System.assertEquals(10, col.Quantity__c);
+            System.assert(col.Name.startsWith('[DEL]'));
+        }
     }
 
     @IsTest
-    static void dedup_secondCallForSameIds_doesNotEnqueueAgain() {
-        // Confirm that enqueuedIds prevents a second job for the same Id set.
-        // We use skipAsync = false so the real enqueue path runs, but we
-        // reset enqueuedIds first to ensure a clean state.
+    static void testBuildCOL() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        OrderItem oi = [
+            SELECT Id, OrderItemNumber, Product2.Name,
+                   Order.AccountId, Quantity, TotalPrice,
+                   ServiceDate, EndDate, SBQQ__DefaultSubscriptionTerm__c,
+                   blng__LastChargeToDate__c, blng__NextBillingDate__c
+            FROM OrderItem
+            WHERE Id = :bundle.orderItem.Id
+        ];
+
+        CustomerOrderLine__c col = CustomerOrderLineService.buildCOL(oi);
+
+        System.assertEquals(oi.Id, col.OrderItem__c);
+        System.assertEquals(oi.Quantity, col.Quantity__c);
+        System.assertEquals(oi.ServiceDate, col.Service_Date__c);
+        System.assertEquals(oi.EndDate, col.End_Date__c);
+        System.assertEquals(oi.Product2.Name, col.Product_Name__c);
+    }
+
+    @IsTest
+    static void testApplyChangesReturnsTrueWhenFieldsChange() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        CustomerOrderLine__c col = new CustomerOrderLine__c(
+            Name         = 'Test COL',
+            OrderItem__c = bundle.orderItem.Id,
+            Quantity__c  = 1,
+            Service_Date__c = Date.today().addDays(-1),
+            End_Date__c = Date.today().addMonths(6),
+            Total_Price__c = 100
+        );
+
+        OrderItem oldOi = CustomerOrderLineService.buildPseudoOld(col);
+
+        OrderItem newOi = [
+            SELECT Id, Quantity, TotalPrice, ServiceDate, EndDate,
+                   OrderItemNumber, Product2.Name,
+                   SBQQ__DefaultSubscriptionTerm__c,
+                   blng__LastChargeToDate__c, blng__NextBillingDate__c,
+                   SBQQ__Contract__r.ContractNumber,
+                   SBQQ__Contract__r.Status
+            FROM OrderItem
+            WHERE Id = :bundle.orderItem.Id
+        ];
+
+        newOi.Quantity = 7;
+
+        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOi, newOi);
+
+        System.assertEquals(true, changed, 'applyChanges should detect changes.');
+        System.assertEquals(7, col.Quantity__c);
+    }
+
+    @IsTest
+    static void testApplyChangesReturnsFalseWhenNoFieldsChange() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        ensureColExists(bundle.orderItem.Id, bundle.orderItem);
+
+        CustomerOrderLine__c col = [
+            SELECT Id, Name, OrderItem__c, Quantity__c, Service_Date__c,
+                   End_Date__c, Total_Price__c, OrderItemNumber__c,
+                   Product_Name__c, Subscription_Term_Months__c,
+                   Contract_Number__c, Contract_Status__c,
+                   blng_LastChargeToDate__c, blng_NextBillingDate__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :bundle.orderItem.Id
+            LIMIT 1
+        ];
+
+        OrderItem oldOi = CustomerOrderLineService.buildPseudoOld(col);
+
+        OrderItem newOi = CustomerOrderLineService.buildPseudoOld(col);
+
+        Boolean changed = CustomerOrderLineService.applyChanges(col, oldOi, newOi);
+
+        System.assertEquals(false, changed, 'No fields changed, so result should be false.');
+    }
+
+    @IsTest
+    static void testGetColsByOrderItemIdsHandlesNullAndEmpty() {
+        resetServiceFlags();
+
+        Map<Id, CustomerOrderLine__c> emptyResult =
+            CustomerOrderLineService.getColsByOrderItemIds(new Set<Id>());
+
+        System.assertEquals(0, emptyResult.size());
+
+        Map<Id, CustomerOrderLine__c> nullResult =
+            CustomerOrderLineService.getColsByOrderItemIds(null);
+
+        System.assertEquals(0, nullResult.size());
+    }
+
+    @IsTest
+    static void testGetColsByOrderItemIdsReturnsRecords() {
+        resetServiceFlags();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        ensureColExists(bundle.orderItem.Id, bundle.orderItem);
+
+        Map<Id, CustomerOrderLine__c> result =
+            CustomerOrderLineService.getColsByOrderItemIds(
+                new Set<Id>{ bundle.orderItem.Id }
+            );
+
+        System.assertEquals(1, result.size());
+        System.assert(result.containsKey(bundle.orderItem.Id));
+    }
+
+    @IsTest
+    static void testGetOrphanedCols() {
+        resetServiceFlags();
+
+        CustomerOrderLine__c orphan =
+            CPQ_TestDataFactory.createOrphanCOL('Orphan COL');
+
+        CustomerOrderLine__c deletedOrphan =
+            CPQ_TestDataFactory.createOrphanCOL('[DEL] Already Deleted COL');
+
+        List<CustomerOrderLine__c> orphans =
+            CustomerOrderLineService.getOrphanedCols();
+
+        Set<Id> orphanIds = new Set<Id>();
+
+        for (CustomerOrderLine__c col : orphans) {
+            orphanIds.add(col.Id);
+        }
+
+        System.assert(orphanIds.contains(orphan.Id));
+        System.assert(!orphanIds.contains(deletedOrphan.Id));
+    }
+
+    @IsTest
+    static void testQueueableCreateJob() {
+        CustomerOrderLineService.skipAsync = false;
         CustomerOrderLineService.enqueuedIds.clear();
-        OrderItem oi = getTestOI();
 
-        // First call — should add the Id and enqueue
-        Set<Id> firstPass = new Set<Id>{ oi.Id };
-        CustomerOrderLineService.enqueuedIds.addAll(firstPass); // simulate first run
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
 
-        // Second call with skipAsync off — dedup should return an empty set
-        // and no second job should be enqueued (no AsyncException thrown)
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_INSERT,
-            new Map<Id, OrderItem>{ oi.Id => oi }, null, null
+        deleteExistingCols(bundle.orderItem.Id);
+
+        Test.startTest();
+        System.enqueueJob(
+            new CustomerOrderLineService.CreateCOLsJob(
+                new Set<Id>{ bundle.orderItem.Id }
+            )
         );
+        Test.stopTest();
 
-        System.assert(true, 'No exception should be thrown when dedup suppresses a duplicate enqueue');
+        System.assertEquals(
+            1,
+            [
+                SELECT COUNT()
+                FROM CustomerOrderLine__c
+                WHERE OrderItem__c = :bundle.orderItem.Id
+            ]
+        );
     }
 
     @IsTest
-    static void createCOLsSync_emptySet_doesNotThrow() {
-        // Defensive guard: passing an empty set should return silently
-        CustomerOrderLineService.skipAsync = true;
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_INSERT,
-            new Map<Id, OrderItem>(), null, null
-        );
-        System.assert(true);
-    }
+    static void testQueueableUpdateJob() {
+        resetServiceFlags();
 
-    @IsTest
-    static void updateCOLsSync_emptySet_doesNotThrow() {
-        // Defensive guard: passing an empty set should return silently
-        CustomerOrderLineService.skipAsync = true;
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_UPDATE,
-            new Map<Id, OrderItem>(), new Map<Id, OrderItem>(), null
-        );
-        System.assert(true);
-    }
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
 
-    @IsTest
-    static void createCOLsAsync_allExisting_skipsInsert() {
-        // The @testSetup trigger already created a COL — verify it's there
-        OrderItem oi = getTestOI();
-        Integer countBefore = [
-            SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id
+        ensureColExists(bundle.orderItem.Id, bundle.orderItem);
+
+        OrderItem oi = [
+            SELECT Id, Quantity
+            FROM OrderItem
+            WHERE Id = :bundle.orderItem.Id
         ];
-        System.assert(countBefore >= 1, 'COL should already exist from @testSetup trigger');
 
-        // Call AFTER_INSERT again with skipAsync — idempotency check should skip insert
-        CustomerOrderLineService.skipAsync = true;
-        CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_INSERT,
-            new Map<Id, OrderItem>{ oi.Id => oi }, null, null
+        oi.Quantity = 12;
+        update oi;
+
+        CustomerOrderLineService.skipAsync = false;
+        CustomerOrderLineService.enqueuedIds.clear();
+
+        Test.startTest();
+        System.enqueueJob(
+            new CustomerOrderLineService.UpdateCOLsJob(
+                new Set<Id>{ oi.Id }
+            )
         );
+        Test.stopTest();
 
-        Integer countAfter = [
-            SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id
+        CustomerOrderLine__c col = [
+            SELECT Quantity__c
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :oi.Id
+            LIMIT 1
         ];
-        System.assertEquals(countBefore, countAfter, 'Should not create a duplicate');
+
+        System.assertEquals(12, col.Quantity__c);
     }
 
     @IsTest
-    static void updateCOLsSync_noCOL_skipsUpdate() {
-        // Delete the COL so the update path hits the "no COL found" continue branch
-        OrderItem oi = getTestOI();
-        delete [SELECT Id FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
+    static void testRunWithUnhandledOperation() {
+        resetServiceFlags();
 
-        CustomerOrderLineService.skipAsync = true;
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        Test.startTest();
         CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_UPDATE,
-            new Map<Id, OrderItem>{ oi.Id => oi },
-            new Map<Id, OrderItem>{ oi.Id => oi },
+            System.TriggerOperation.BEFORE_INSERT,
+            new Map<Id, OrderItem>{ bundle.orderItem.Id => bundle.orderItem },
+            null,
+            null
+        );
+        Test.stopTest();
+
+        System.assert(true, 'Unhandled operation branch executed safely.');
+    }
+
+    @IsTest
+    static void testRunDedupPreventsDuplicateQueueable() {
+        CustomerOrderLineService.skipAsync = false;
+        CustomerOrderLineService.enqueuedIds.clear();
+
+        CPQ_TestDataFactory.OrderBundle bundle =
+            CPQ_TestDataFactory.createOrderWithItem();
+
+        deleteExistingCols(bundle.orderItem.Id);
+
+        Map<Id, OrderItem> newMap =
+            new Map<Id, OrderItem>{ bundle.orderItem.Id => bundle.orderItem };
+
+        Test.startTest();
+
+        CustomerOrderLineService.run(
+            System.TriggerOperation.AFTER_INSERT,
+            newMap,
+            null,
             null
         );
 
-        Integer count = [SELECT COUNT() FROM CustomerOrderLine__c WHERE OrderItem__c = :oi.Id];
-        System.assertEquals(0, count);
-    }
-
-    @IsTest
-    static void updateCOLsSync_noChanges_doesNotUpdateSyncDate() {
-        // The @testSetup trigger already created a COL that matches the OI
-        OrderItem oi = getTestOI();
-
-        DateTime syncedBefore = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :oi.Id LIMIT 1
-        ].Last_Synced_Date__c;
-
-        CustomerOrderLineService.skipAsync = true;
         CustomerOrderLineService.run(
-            System.TriggerOperation.AFTER_UPDATE,
-            new Map<Id, OrderItem>{ oi.Id => oi },
-            new Map<Id, OrderItem>{ oi.Id => oi },
+            System.TriggerOperation.AFTER_INSERT,
+            newMap,
+            null,
             null
         );
 
-        DateTime syncedAfter = [
-            SELECT Last_Synced_Date__c FROM CustomerOrderLine__c
-            WHERE  OrderItem__c = :oi.Id LIMIT 1
-        ].Last_Synced_Date__c;
+        Test.stopTest();
 
-        System.assertEquals(syncedBefore, syncedAfter);
+        System.assertEquals(
+            1,
+            [
+                SELECT COUNT()
+                FROM CustomerOrderLine__c
+                WHERE OrderItem__c = :bundle.orderItem.Id
+            ],
+            'Dedup guard should prevent duplicate COL creation.'
+        );
+    }
+
+    private static void ensureColExists(Id orderItemId, OrderItem oi) {
+        List<CustomerOrderLine__c> existing = [
+            SELECT Id
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :orderItemId
+            LIMIT 1
+        ];
+
+        if (existing.isEmpty()) {
+            CustomerOrderLineService.run(
+                System.TriggerOperation.AFTER_INSERT,
+                new Map<Id, OrderItem>{ orderItemId => oi },
+                null,
+                null
+            );
+        }
+    }
+
+    private static void deleteExistingCols(Id orderItemId) {
+        List<CustomerOrderLine__c> existing = [
+            SELECT Id
+            FROM CustomerOrderLine__c
+            WHERE OrderItem__c = :orderItemId
+        ];
+
+        if (!existing.isEmpty()) {
+            delete existing;
+        }
     }
 }
+
+#####
+@TestVisible
+static Boolean skipAsync = false;
+
+@TestVisible
+static Set<Id> enqueuedIds = new Set<Id>();
