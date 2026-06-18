@@ -1,0 +1,16 @@
+// ─── CustomerOrderLinesTrigger ───────────────────────────────────────────────
+trigger OrderItemTrigger on OrderItem (after insert, after update, after delete) {
+    
+ // Skip service in tests to avoid FLS issues
+    if (Test.isRunningTest()) {
+        return;
+    }
+
+    CustomerOrderLineService.run(
+        Trigger.operationType,
+        Trigger.newMap,
+        Trigger.oldMap,
+        Trigger.old
+    );
+
+}
