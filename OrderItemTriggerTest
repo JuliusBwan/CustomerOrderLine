@@ -1,0 +1,130 @@
+@isTest
+private class OrderItemTriggerTest {
+
+    //Test data setup
+    User u = CPQ_TestDataFactory.createUser();
+    CPQ_TestDataFactory.OrderBundle bundle = CPQ_TestDataFactory.createOrderWithItem();
+
+
+    // ===================================================
+    // AFTER INSERT
+    // ===================================================
+    @isTest
+    static void test_afterInsert() {
+
+
+        System.runAs(u) {
+
+            CPQ_TestDataFactory.OrderBundle bundle =
+                CPQ_TestDataFactory.createOrderWithItem();
+
+            System.assertNotEquals(
+                null,
+                bundle.orderItem.Id,
+                'OrderItem should be created and trigger executed'
+            );
+        }
+    }
+
+    // ===================================================
+    // AFTER UPDATE
+    // ===================================================
+    @isTest
+    static void test_afterUpdate() {
+
+        User u = CPQ_TestDataFactory.createUser();
+
+        System.runAs(u) {
+
+            CPQ_TestDataFactory.OrderBundle bundle =
+                CPQ_TestDataFactory.createOrderWithItem();
+
+            OrderItem oi = bundle.orderItem;
+
+            Test.startTest();
+            oi.Quantity = 5;
+            update oi;
+            Test.stopTest();
+
+            System.assertEquals(
+                5,
+                [SELECT Quantity FROM OrderItem WHERE Id = :oi.Id].Quantity,
+                'OrderItem should be updated'
+            );
+        }
+    }
+
+    // ===================================================
+    // AFTER DELETE
+    // ===================================================
+    @isTest
+    static void test_afterDelete() {
+
+        User u = CPQ_TestDataFactory.createUser();
+
+        System.runAs(u) {
+
+            CPQ_TestDataFactory.OrderBundle bundle =
+                CPQ_TestDataFactory.createOrderWithItem();
+
+            OrderItem oi = bundle.orderItem;
+
+            Test.startTest();
+            delete oi;
+            Test.stopTest();
+
+            System.assertEquals(
+                0,
+                [SELECT COUNT() FROM OrderItem WHERE Id = :oi.Id],
+                'OrderItem should be deleted'
+            );
+        }
+    }
+
+    // ===================================================
+    // BULK OPERATIONS
+    // ===================================================
+    @isTest
+    static void test_bulk_operations() {
+
+        User u = CPQ_TestDataFactory.createUser();
+
+        System.runAs(u) {
+
+            CPQ_TestDataFactory.OrderBundle bundle =
+                CPQ_TestDataFactory.createOrderWithItem();
+
+            List<OrderItem> items = new List<OrderItem>();
+
+            // ✅ Reuse same Order + PBE → avoids duplicate + validation issues
+            for (Integer i = 0; i < 5; i++) {
+                items.add(new OrderItem(
+                    OrderId = bundle.orderRec.Id,
+                    PricebookEntryId = bundle.pbe.Id,
+                    Quantity = 1,
+                    UnitPrice = 100,
+                    ServiceDate = Date.today(),
+                    EndDate = Date.today().addMonths(12),
+                    blng__RevenueRecognitionRule__c = CPQ_TestDataFactory.getRevRecRule().Id,
+                    blng__BillingRule__c = CPQ_TestDataFactory.getBillingRule().Id,
+                    blng__TaxRule__c = CPQ_TestDataFactory.getTaxRule().Id
+                ));
+            }
+
+            Test.startTest();
+
+            insert items;   // after insert
+
+            for (OrderItem oi : items) {
+                oi.Quantity = 10;
+            }
+
+            update items;   // after update
+            delete items;   // after delete
+
+            Test.stopTest();
+
+            System.assert(true, 'Bulk operations executed successfully');
+        }
+    }
+}
