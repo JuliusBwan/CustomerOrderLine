@@ -1,0 +1,488 @@
+/*
+ * ============================================================================
+ *  CPQ_TestDataFactory — Shared Test Data Factory for the entire org
+ * ============================================================================
+ *
+ *  METHOD SUMMARY
+ *  ──────────────
+ *  getBillingRule()          → Returns a cached active Billing Rule. Inserted
+ *                              once, reused wherever a billing rule is needed.
+ *
+ *  getRevRecRule()           → Returns a cached active Revenue Recognition Rule.
+ *                              Inserted once, reused across the transaction.
+ *
+ *  getTaxRule()              → Returns a cached active Tax Rule. Inserted once,
+ *                              reused across the transaction.
+ *
+ *  getProduct()              → Returns a cached CPQ subscription Product2 with
+ *                              charge type, billing type, and all three billing
+ *                              rules (billing, rev rec, tax). Only one Product
+ *                              is ever inserted per transaction.
+ *
+ *  getStandardPBE()          → Returns a cached standard PricebookEntry for the
+ *                              cached Product. Called internally by createOrderWithItem().
+ *
+ *  createLegalEntity()       → Inserts a billing Legal Entity record.
+ *
+ *  createAccount()           → Inserts a full Account with a unique name, Legal
+ *                              Entity, shipping and billing addresses. Each call
+ *                              produces a distinct Account to avoid duplicate
+ *                              detection rules.
+ *
+ *  createQuote(accountId, type)
+ *                            → Inserts a CPQ Quote (New or Renewal) linked to
+ *                              the given Account.
+ *
+ *  createGroup(quoteId, name)
+ *                            → Inserts a Quote Line Group on the given Quote.
+ *
+ *  createQuoteLine(quoteId, groupId, subscriptionTerm)
+ *                            → Inserts a Quote Line using the cached Product.
+ *
+ *  createSubscription(accountId, quoteLineId)
+ *                            → Inserts a Subscription pointing at the given
+ *                              Account and original Quote Line.
+ *
+ *  createRenewalLine(renewalQuoteId, subscriptionId)
+ *                            → Inserts a renewal Quote Line linked to an
+ *                              existing Subscription via the cached Product.
+ *
+ *  createOrderWithItem()     → Builds Account → Product → PBE → Order →
+ *                              OrderItem in one call. Returns an OrderBundle
+ *                              so the test can access every record. Calls
+ *                              createAccount() and getProduct() internally.
+ *                              Sets billing, rev rec, and tax rules on the
+ *                              OrderItem.
+ *
+ *  createOrderWithItem(quantity, unitPrice)
+ *                            → Same as above but lets you set the quantity
+ *                              and unit price on the OrderItem.
+ *
+ *  createCOL(orderItem)      → Inserts a CustomerOrderLine__c linked to the
+ *                              given OrderItem. Name defaults to COL-{Id}.
+ *
+ *  createCOL(orderItem, name)
+ *                            → Same as above but with a custom COL name.
+ *
+ *  createOrphanCOL(name)     → Inserts a COL with no OrderItem link. Useful
+ *                              for testing orphan-detection in the batch.
+ *
+ * ============================================================================
+ */
+@IsTest
+public class CPQ_TestDataFactory {
+
+    /* ==========================================================
+       CACHES — each record is inserted once per test transaction
+       ========================================================== */
+    private static Product2 cachedProduct;
+    private static PricebookEntry cachedPBE;
+    private static blng__BillingRule__c cachedBillingRule;
+    private static blng__RevenueRecognitionRule__c cachedRevRecRule;
+    private static blng__TaxRule__c cachedTaxRule;
+
+    // Counter to make each Account name unique and avoid duplicate detection
+    private static Integer accountCounter = 0;
+
+
+    /* ==========================================================
+       BILLING RULE — required by Product2 and OrderItem
+       ========================================================== */
+
+    /**
+     * Returns a cached active Billing Rule. Inserted once, reused by
+     * getProduct() and createOrderWithItem().
+     */
+    public static blng__BillingRule__c getBillingRule() {
+        if (cachedBillingRule == null) {
+            cachedBillingRule = new blng__BillingRule__c(
+                Name                            = 'Sample Billing Rule',
+                blng__Active__c                 = true,
+                blng__GenerateInvoices__c        = 'No',
+                blng__InitialBillingTrigger__c   = 'Order Product Activation Date'
+            );
+            insert cachedBillingRule;
+        }
+        return cachedBillingRule;
+    }
+
+
+    /* ==========================================================
+       REVENUE RECOGNITION RULE — required by OrderItem
+       ========================================================== */
+
+    /**
+     * Returns a cached active Revenue Recognition Rule. Inserted once,
+     * reused by getProduct() and createOrderWithItem().
+     */
+    public static blng__RevenueRecognitionRule__c getRevRecRule() {
+        if (cachedRevRecRule == null) {
+            cachedRevRecRule = new blng__RevenueRecognitionRule__c(
+                Name                            = 'Sample Revenue Recognition Rule',
+                blng__Active__c                 = true,
+                blng__CreateRevenueSchedule__c  = 'No'
+            );
+            insert cachedRevRecRule;
+        }
+        return cachedRevRecRule;
+    }
+
+
+    /* ==========================================================
+       TAX RULE — required by OrderItem
+       ========================================================== */
+
+    /**
+     * Returns a cached active Tax Rule. Inserted once, reused by
+     * createOrderWithItem().
+     */
+    public static blng__TaxRule__c getTaxRule() {
+        if (cachedTaxRule == null) {
+            cachedTaxRule = new blng__TaxRule__c(
+                Name = 'Sample Tax Rule',
+                blng__Active__c       = true,
+                blng__TaxableYesNo__c = 'Yes',
+                Unique_Tax_Rule_Identifier__c = 'TaxExempt'
+            );
+            insert cachedTaxRule;
+        }
+        return cachedTaxRule;
+    }
+
+
+    /* ==========================================================
+       PRODUCT CACHE — ensures only 1 Product2 is created
+       ========================================================== */
+
+    /**
+     * Returns a cached CPQ subscription Product2 with charge type, billing
+     * type, billing frequency, and all three rules (billing, rev rec, tax).
+     * Inserted once, reused across every method that needs a product.
+     */
+    public static Product2 getProduct() {
+        if (cachedProduct == null) {
+            cachedProduct = new Product2(
+                Name                           = 'Test Product',
+                ProductCode                    = 'TEST-PROD',
+                IsActive                       = true,
+                CurrencyIsoCode                = 'GBP',
+                SBQQ__ChargeType__c            = 'Recurring',
+                SBQQ__BillingType__c           = 'Advance',
+                SBQQ__BillingFrequency__c      = 'Annual',
+                blng__BillingRule__c            = getBillingRule().Id,
+                blng__RevenueRecognitionRule__c = getRevRecRule().Id,
+                blng__TaxRule__c                = getTaxRule().Id,
+                SBQQ__SubscriptionType__c      = 'Renewable',
+                SBQQ__SubscriptionPricing__c   = 'Fixed Price',
+                SBQQ__SubscriptionTerm__c      = 12,
+                SBQQ__PricingMethod__c         = 'List',
+                SBQQ__DefaultQuantity__c       = 1,
+                SBQQ__Component__c             = true,
+                SBQQ__AssetConversion__c       = 'One per quote line'
+            );
+            insert cachedProduct;
+        }
+        return cachedProduct;
+    }
+
+
+    /* ==========================================================
+       PRICEBOOK ENTRY CACHE — one PBE per test transaction
+       ========================================================== */
+
+    /**
+     * Returns a cached standard PricebookEntry for the cached Product.
+     * Called internally by createOrderWithItem().
+     */
+    public static PricebookEntry getStandardPBE() {
+        if (cachedPBE == null) {
+            Product2 p = getProduct();
+            cachedPBE = new PricebookEntry(
+                Pricebook2Id = Test.getStandardPricebookId(),
+                Product2Id   = p.Id,
+                UnitPrice    = 100,
+                IsActive     = true
+            );
+            insert cachedPBE;
+        }
+        return cachedPBE;
+    }
+
+
+    /* ==========================================================
+       LEGAL ENTITY (Billing)
+       ========================================================== */
+
+    /**
+     * Inserts and returns a billing Legal Entity. Called internally
+     * by createAccount() — you rarely need to call this directly.
+     */
+    private static blng__LegalEntity__c cachedLegalEntity;
+
+    public static blng__LegalEntity__c getLegalEntity() {
+        if (cachedLegalEntity == null) {
+            String unique = String.valueOf(Crypto.getRandomInteger());
+    
+            cachedLegalEntity = new blng__LegalEntity__c(
+                Name               = 'LE_' + unique,
+                blng__Active__c    = true,
+                BC_Company_Id__c   = unique,
+                BC_Company_Name__c = 'LE_' + unique,
+                BC_Environment__c  = 'Production'
+            );
+            insert cachedLegalEntity;
+        }
+        return cachedLegalEntity;
+    }
+
+
+
+    /* ==========================================================
+       ACCOUNT (with full shipping & billing details)
+       ========================================================== */
+
+    /**
+     * Inserts a full Account with a Legal Entity, billing and shipping
+     * addresses. Each call produces a unique Account name so duplicate
+     * detection rules are never triggered.
+     */
+    public static Account createAccount() {
+        accountCounter++;
+        
+        blng__LegalEntity__c le = getLegalEntity();
+        
+        String unique = String.valueOf(Datetime.now().getTime());
+        String uniqueA = String.valueOf(Crypto.getRandomInteger());
+
+        Account a = new Account(
+            Name                                       = 'Test Account ' + accountCounter +' ' + unique,
+            GBG_Billing_Entity__c                      = le.Id,
+            ShippingStreet                              = uniqueA +'83 Phoenix Street',
+            ShippingCity                                = 'Sutton-in-Ashfield',
+            ShippingPostalCode                          = 'NG17',
+            ShippingCountry                             = 'United Kingdom',
+            BillingStreet                               = uniqueA + '83 Phoenix Street',
+            BillingCity                                 = 'Sutton-in-Ashfield',
+            BillingPostalCode                           = 'NG17',
+            BillingCountry                              = 'United Kingdom',
+            Correspondence_Address_SameAs_Registered__c = true
+        );
+        insert a;
+        return a;
+    }
+
+
+    /* ==========================================================
+       QUOTE (New or Renewal)
+       ========================================================== */
+
+    /**
+     * Inserts a CPQ Quote of the given type (e.g. 'New', 'Renewal')
+     * linked to the given Account.
+     */
+    public static SBQQ__Quote__c createQuote(Id accountId, String type) {
+        SBQQ__Quote__c q = new SBQQ__Quote__c(
+            SBQQ__Account__c = accountId,
+            SBQQ__Type__c    = type
+        );
+        insert q;
+        return q;
+    }
+
+
+    /* ==========================================================
+       QUOTE LINE GROUP
+       ========================================================== */
+
+    /**
+     * Inserts a Quote Line Group on the given Quote with the specified
+     * name, start date, and end date.
+     */
+    public static SBQQ__QuoteLineGroup__c createGroup(Id quoteId,String name) {
+        SBQQ__QuoteLineGroup__c g = new SBQQ__QuoteLineGroup__c(SBQQ__Quote__c = quoteId,Name = name);
+        insert g;
+        return g;
+    }
+
+    /* ==========================================================
+       QUOTE LINE (Original quote)
+       ========================================================== */
+
+    /**
+     * Inserts a Quote Line on the given Quote and Group using the
+     * cached Product. Sets the subscription term to the value you pass in.
+     */
+    public static SBQQ__QuoteLine__c createQuoteLine(
+        Id quoteId,
+        Id groupId,
+        Decimal subscriptionTerm
+    ) {
+        Product2 p = getProduct();
+
+        SBQQ__QuoteLine__c ql = new SBQQ__QuoteLine__c(
+            SBQQ__Quote__c            = quoteId,
+            SBQQ__Group__c            = groupId,
+            SBQQ__Product__c          = p.Id,
+            SBQQ__Quantity__c         = 1,
+            SBQQ__ListPrice__c        = 0,
+            SBQQ__SpecialPrice__c     = 0,
+            SBQQ__PricingMethod__c    = 'List',
+            SBQQ__SubscriptionTerm__c = subscriptionTerm
+        );
+        insert ql;
+        return ql;
+    }
+
+
+    /* ==========================================================
+       SUBSCRIPTION (Points to original Quote Line)
+       ========================================================== */
+
+    /**
+     * Inserts a Subscription linked to the given Account and Quote Line.
+     */
+    public static SBQQ__Subscription__c createSubscription(Id accountId, Id qlId) {
+        SBQQ__Subscription__c sub = new SBQQ__Subscription__c(
+            SBQQ__Account__c   = accountId,
+            SBQQ__QuoteLine__c = qlId,
+            SBQQ__Quantity__c  = 1
+        );
+        insert sub;
+        return sub;
+    }
+
+
+    /* ==========================================================
+       RENEWAL QUOTE LINE (Has RenewedSubscription__c)
+       ========================================================== */
+
+    /**
+     * Inserts a renewal Quote Line linked to an existing Subscription
+     * via the cached Product.
+     */
+    public static SBQQ__QuoteLine__c createRenewalLine(
+        Id renewalQuoteId,
+        Id subscriptionId
+    ) {
+        Product2 p = getProduct();
+
+        SBQQ__QuoteLine__c rl = new SBQQ__QuoteLine__c(
+            SBQQ__Quote__c               = renewalQuoteId,
+            SBQQ__RenewedSubscription__c = subscriptionId,
+            SBQQ__Product__c             = p.Id,
+            SBQQ__Quantity__c            = 1,
+            SBQQ__ListPrice__c           = 0,
+            SBQQ__SpecialPrice__c        = 0,
+            SBQQ__PricingMethod__c       = 'List'
+        );
+        insert rl;
+        return rl;
+    }
+
+
+    /* ==========================================================
+       ORDER BUNDLE — container for Order + OrderItem test data
+       ========================================================== */
+
+    /**
+     * Holds every record in the Account → Order → OrderItem chain
+     * so test methods can access any piece by name (e.g. b.orderItem).
+     */
+    public class OrderBundle {
+        public Account        account;
+        public Product2       product;
+        public PricebookEntry pbe;
+        public Order          orderRec;
+        public OrderItem      orderItem;
+    }
+
+
+    /* ==========================================================
+       ORDER + ORDER ITEM (composed from existing methods)
+       ========================================================== */
+
+    /**
+     * Creates a full Account → Product → PBE → Order → OrderItem chain
+     * in one call. Uses createAccount() for the Account and getProduct()
+     * plus getStandardPBE() for the Product and PricebookEntry. Sets
+     * billing rule, rev rec rule, and tax rule on the OrderItem.
+     * Defaults: Quantity = 2, UnitPrice = 100.
+     */
+    public static OrderBundle createOrderWithItem() {
+        return createOrderWithItem(2, 100);
+    }
+
+    /**
+     * Same as createOrderWithItem() but lets you set the quantity and
+     * unit price on the OrderItem.
+     */
+    public static OrderBundle createOrderWithItem(Decimal quantity, Decimal unitPrice) {
+        OrderBundle b = new OrderBundle();
+
+        b.account = createAccount();
+        b.product = getProduct();
+        b.pbe     = getStandardPBE();
+
+        b.orderRec = new Order(
+            AccountId                  = b.account.Id,
+            EffectiveDate              = Date.today(),
+            Status                     = 'Draft',
+            Pricebook2Id               = Test.getStandardPricebookId(),
+            blng__BillingDayOfMonth__c = '1'
+        );
+        insert b.orderRec;
+
+        OrderItem oi = new OrderItem(
+            OrderId                        = b.orderRec.Id,
+            PricebookEntryId               = b.pbe.Id,
+            Quantity                       = quantity,
+            UnitPrice                      = unitPrice,
+            ServiceDate                    = Date.today(),
+            EndDate                        = Date.today().addMonths(12),
+            blng__RevenueRecognitionRule__c = getRevRecRule().Id,
+            blng__BillingRule__c            = getBillingRule().Id,
+            blng__TaxRule__c                = getTaxRule().Id
+        );
+        insert oi;
+
+        b.orderItem = oi;
+
+        return b;
+    }
+
+
+    /* ==========================================================
+       CUSTOMER ORDER LINE (COL)
+       ========================================================== */
+
+    /**
+     * Inserts a CustomerOrderLine__c linked to the given OrderItem.
+     * The name defaults to COL-{OrderItem Id}.
+     */
+    public static CustomerOrderLine__c createCOL(OrderItem oi) {
+        return createCOL(oi, 'COL-' + oi.Id);
+    }
+
+    /**
+     * Inserts a CustomerOrderLine__c linked to the given OrderItem
+     * with a custom name. Useful for testing [DEL] prefix scenarios.
+     */
+    public static CustomerOrderLine__c createCOL(OrderItem oi, String name) {
+        CustomerOrderLine__c col = new CustomerOrderLine__c(
+            Name         = name,
+            OrderItem__c = oi.Id
+        );
+        insert col;
+        return col;
+    }
+
+    /**
+     * Inserts a CustomerOrderLine__c with no OrderItem link (an orphan).
+     * Used for testing orphan detection in the batch.
+     */
+    public static CustomerOrderLine__c createOrphanCOL(String name) {
+        CustomerOrderLine__c col = new CustomerOrderLine__c(Name = name);
+        insert col;
+        return col;
+    }
+}
