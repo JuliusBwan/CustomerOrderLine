@@ -1,0 +1,6 @@
+testBulkInsertUpdateDelete
+System.DmlException: Operation failed due to fields being inaccessible on Sobject OrderItem, check errors on Exception or Result! 
+Class.OrderItemTriggerTest.testBulkInsertUpdateDelete: line 134, column 1
+testAfterUpdate
+System.DmlException: Operation failed due to fields being inaccessible on Sobject OrderItem, check errors on Exception or Result!
+Class.OrderItemTriggerTest.testAfterUpdate: line 65, column 1
