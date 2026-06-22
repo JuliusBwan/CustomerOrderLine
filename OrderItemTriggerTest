@@ -55,6 +55,10 @@ private class OrderItemTriggerTest {
 
     @IsTest
     static void testAfterUpdate() {
+        
+        CustomerOrderLineService.skipAsync = true;
+        CustomerOrderLineService.enqueuedIds.clear();
+        
         CPQ_TestDataFactory.OrderBundle bundle =
             CPQ_TestDataFactory.createOrderWithItem();
 
