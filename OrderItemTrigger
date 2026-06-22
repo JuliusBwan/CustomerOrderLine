@@ -1,0 +1,15 @@
+// ─── CustomerOrderLinesTrigger ───────────────────────────────────────────────
+trigger OrderItemTrigger on OrderItem (after insert, after update, after delete) {
+
+    if (Test.isRunningTest()) {
+        return;
+    }
+
+    CustomerOrderLineService.run(
+        Trigger.operationType,
+        Trigger.newMap,
+        Trigger.oldMap,
+        Trigger.old
+    );
+
+}
